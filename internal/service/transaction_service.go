@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/GordenArcher/payfake/internal/domain"
 	"github.com/GordenArcher/payfake/internal/repository"
@@ -195,5 +196,51 @@ func (s *TransactionService) Refund(id, merchantID string) (*domain.Transaction,
 	}
 
 	tx.Status = domain.TransactionReversed
+	return tx, nil
+}
+
+// ListByCustomer returns paginated transactions for a specific customer.
+func (s *TransactionService) ListByCustomer(customerID, merchantID string, page, perPage int) ([]domain.Transaction, int64, error) {
+	offset := (page - 1) * perPage
+	return s.transactionRepo.FindByCustomer(customerID, merchantID, offset, perPage)
+}
+
+// ForceOutcome forces a pending transaction to a specific terminal state.
+// Called by the control panel, bypasses the simulator entirely.
+// Only pending transactions can be forced, if it's already in a
+// terminal state there's nothing to force.
+func (s *TransactionService) ForceOutcome(reference, merchantID, status, errorCode string) (*domain.Transaction, error) {
+	validStatuses := map[string]bool{
+		string(domain.TransactionSuccess):   true,
+		string(domain.TransactionFailed):    true,
+		string(domain.TransactionAbandoned): true,
+	}
+
+	if !validStatuses[status] {
+		return nil, ErrInvalidForceStatus
+	}
+
+	tx, err := s.transactionRepo.FindByReference(reference, merchantID)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+
+	if tx.Status != domain.TransactionPending {
+		return nil, ErrTransactionNotPending
+	}
+
+	newStatus := domain.TransactionStatus(status)
+
+	var paidAt *time.Time
+	if newStatus == domain.TransactionSuccess {
+		now := time.Now()
+		paidAt = &now
+	}
+
+	if err := s.transactionRepo.UpdateStatus(tx.ID, newStatus, paidAt); err != nil {
+		return nil, fmt.Errorf("failed to force transaction status: %w", err)
+	}
+
+	tx.Status = newStatus
 	return tx, nil
 }

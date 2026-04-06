@@ -225,3 +225,14 @@ func (s *AuthService) generateJWT(merchantID, email string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(s.jwtSecret))
 }
+
+// GetMerchant retrieves a merchant by ID.
+// Used by handlers that sit behind JWT auth and need the full
+// merchant record, JWT only carries the ID and email.
+func (s *AuthService) GetMerchant(merchantID string) (*domain.Merchant, error) {
+	merchant, err := s.merchantRepo.FindByID(merchantID)
+	if err != nil {
+		return nil, ErrMerchantNotFound
+	}
+	return merchant, nil
+}

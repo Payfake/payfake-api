@@ -124,3 +124,23 @@ func GetMerchant(c *gin.Context) (domain.Merchant, bool) {
 	merchant, ok := val.(domain.Merchant)
 	return merchant, ok
 }
+
+// GetMerchantIDFromJWT extracts the merchant ID from a validated JWT token.
+// Called by handlers sitting behind RequireJWT middleware, the token
+// is already in context, we just need to parse the claims here.
+func GetMerchantIDFromJWT(c *gin.Context, authSvc interface {
+	ValidateJWT(string) (string, string, error)
+}) (string, bool) {
+	tokenVal, exists := c.Get("jwt_token")
+	if !exists {
+		return "", false
+	}
+
+	token, _ := tokenVal.(string)
+	merchantID, _, err := authSvc.ValidateJWT(token)
+	if err != nil {
+		return "", false
+	}
+
+	return merchantID, true
+}
