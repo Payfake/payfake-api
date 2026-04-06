@@ -79,8 +79,8 @@ func (c *Config) validate() error {
 	if c.JWT.Secret == "" {
 		return fmt.Errorf("JWT_SECRET is required")
 	}
-	if c.Database.Password == "" {
-		return fmt.Errorf("DB_PASSWORD is required")
-	}
+	// if c.Database.Password == "" {
+	// 	return fmt.Errorf("DB_PASSWORD is required")
+	// }
 	return nil
 }
