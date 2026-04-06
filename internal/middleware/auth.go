@@ -14,7 +14,7 @@ import (
 // routes, transaction, charge, customer namespaces.
 // It expects the merchant's secret key in the Authorization header:
 //
-//	Authorization: Bearer sk_test_xxxxxxxxxxxxxxxxxxxxxxxx
+//	Authorization: Bearer <SK TEST KEY HERE>
 //
 // This mirrors exactly how Paystack authenticates server-side API calls.
 // Developers who've used Paystack before will know this pattern already —

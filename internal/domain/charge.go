@@ -8,6 +8,16 @@ const (
 	ProviderAirtelTigo MomoProvider = "airteltigo"
 )
 
+// These are the error code constants the simulator uses to populate
+// SimulationResult.ErrorCode. Using domain constants instead of raw
+// strings means if we rename a code we catch every reference at compile time.
+const (
+	ChargeDoNotHonor         = "CHARGE_DO_NOT_HONOR"
+	ChargeMomoTimeout        = "CHARGE_MOMO_TIMEOUT"
+	ChargeBankTransferFailed = "CHARGE_BANK_TRANSFER_FAILED"
+	ChargeFailed             = "CHARGE_FAILED"
+)
+
 type Charge struct {
 	Base
 	MerchantID    string             `gorm:"type:varchar(36);not null;index" json:"merchant_id"`
