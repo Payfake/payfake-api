@@ -35,7 +35,7 @@ type JWTConfig struct {
 }
 
 func Load() (*Config, error) {
-	godenv.MustLoad()
+	_ = godenv.Load()
 
 	cfg := &Config{
 		App: AppConfig{
