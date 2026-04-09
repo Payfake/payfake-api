@@ -219,10 +219,10 @@ func (h *TransactionHandler) Refund(c *gin.Context) {
 		response.TransactionRefunded, tx)
 }
 
-// PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
-// Called by the checkout page to load transaction details (amount, currency etc)
-// without needing the secret key. Only non-sensitive fields are returned,
-// we never expose the merchant's secret key or internal IDs through this endpoint.
+// / PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
+// Called by the React checkout page on mount to load transaction details.
+// Returns only what the checkout UI needs, amount, currency, status.
+// Never exposes secret keys, merchant IDs or internal data.
 func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 	accessCode := c.Param("access_code")
 	if accessCode == "" {
@@ -236,8 +236,9 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 		return
 	}
 
-	// Only return what the checkout page needs — never expose
-	// merchant secret keys, internal merchant IDs, or raw card data.
+	// Return only what the checkout page needs.
+	// The React app uses this to display the amount and currency,
+	// and after payment redirects to callback_url with the reference.
 	response.Success(c, http.StatusOK, "Transaction fetched",
 		response.TransactionFetched, gin.H{
 			"amount":       tx.Amount,

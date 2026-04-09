@@ -86,18 +86,16 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 		charge.GET("/:reference", chargeHandler.FetchCharge)
 	}
 
-	r.GET("/pay/:access_code", handler.CheckoutPage())
-
-	// Public checkout routes, authenticated via access_code embedded in the
-	// request body, not a secret key. Safe to call from the browser because
-	// access codes are single-use, short-lived, and tied to one transaction.
-	// The secret key never touches the frontend.
+	// Public checkout routes, no secret key required.
+	// Called directly from the React checkout page running in the customer's browser.
+	// Authenticated via access_code in the request body or URL param.
+	// The merchant's secret key never touches the frontend at any point.
 	public := v1.Group("/public")
 	{
+		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
 		public.POST("/charge/card", chargeHandler.PublicChargeCard)
 		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
 		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
-		public.GET("/pay/:access_code", handler.CheckoutPage())
 	}
 
 	customer := v1.Group("/customer")

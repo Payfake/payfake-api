@@ -234,10 +234,10 @@ func (h *ChargeHandler) FetchCharge(c *gin.Context) {
 }
 
 // PublicChargeCard handles POST /api/v1/public/charge/card
-// Called directly from the checkout page, authenticated via access_code
-// in the request body instead of a secret key in the Authorization header.
-// The access_code is single-use and tied to one transaction so it is
-// safe to send from the browser without exposing the secret key.
+// Called from the React checkout page — authenticated via access_code
+// in the request body. No Authorization header needed.
+// The secret key never touches the frontend — access_code is the
+// single-use token that identifies the transaction being paid.
 func (h *ChargeHandler) PublicChargeCard(c *gin.Context) {
 	var req chargeCardRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -247,14 +247,11 @@ func (h *ChargeHandler) PublicChargeCard(c *gin.Context) {
 
 	if req.AccessCode == "" {
 		response.ValidationErr(c, []response.ErrorField{
-			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+			{Field: "access_code", Message: "access_code is required"},
 		})
 		return
 	}
 
-	// Look up the merchant from the access_code — the public endpoint
-	// has no Authorization header so we resolve the merchant through
-	// the transaction the access_code belongs to.
 	merchant, err := h.chargeSvc.GetMerchantByAccessCode(req.AccessCode)
 	if err != nil {
 		response.NotFoundErr(c, "Invalid or expired access code")
@@ -299,7 +296,7 @@ func (h *ChargeHandler) PublicChargeMobileMoney(c *gin.Context) {
 
 	if req.AccessCode == "" {
 		response.ValidationErr(c, []response.ErrorField{
-			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+			{Field: "access_code", Message: "access_code is required"},
 		})
 		return
 	}
@@ -352,7 +349,7 @@ func (h *ChargeHandler) PublicChargeBank(c *gin.Context) {
 
 	if req.AccessCode == "" {
 		response.ValidationErr(c, []response.ErrorField{
-			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+			{Field: "access_code", Message: "access_code is required"},
 		})
 		return
 	}
