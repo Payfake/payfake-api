@@ -35,7 +35,7 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 	simulatorSvc := service.NewSimulatorService(scenarioRepo)
 	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo)
 	txSvc := service.NewTransactionService(transactionRepo, customerSvc)
-	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, simulatorSvc, webhookSvc)
+	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, simulatorSvc, webhookSvc)
 	scenarioSvc := service.NewScenarioService(scenarioRepo)
 	logSvc := service.NewLogService(logRepo)
 
@@ -84,6 +84,20 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 		charge.POST("/mobile_money", chargeHandler.ChargeMobileMoney)
 		charge.POST("/bank", chargeHandler.ChargeBank)
 		charge.GET("/:reference", chargeHandler.FetchCharge)
+	}
+
+	r.GET("/pay/:access_code", handler.CheckoutPage())
+
+	// Public checkout routes, authenticated via access_code embedded in the
+	// request body, not a secret key. Safe to call from the browser because
+	// access codes are single-use, short-lived, and tied to one transaction.
+	// The secret key never touches the frontend.
+	public := v1.Group("/public")
+	{
+		public.POST("/charge/card", chargeHandler.PublicChargeCard)
+		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
+		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
+		public.GET("/pay/:access_code", handler.CheckoutPage())
 	}
 
 	customer := v1.Group("/customer")

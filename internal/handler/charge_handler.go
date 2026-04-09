@@ -233,6 +233,163 @@ func (h *ChargeHandler) FetchCharge(c *gin.Context) {
 		response.ChargeInitiated, charge)
 }
 
+// PublicChargeCard handles POST /api/v1/public/charge/card
+// Called directly from the checkout page, authenticated via access_code
+// in the request body instead of a secret key in the Authorization header.
+// The access_code is single-use and tied to one transaction so it is
+// safe to send from the browser without exposing the secret key.
+func (h *ChargeHandler) PublicChargeCard(c *gin.Context) {
+	var req chargeCardRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	if req.AccessCode == "" {
+		response.ValidationErr(c, []response.ErrorField{
+			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+		})
+		return
+	}
+
+	// Look up the merchant from the access_code — the public endpoint
+	// has no Authorization header so we resolve the merchant through
+	// the transaction the access_code belongs to.
+	merchant, err := h.chargeSvc.GetMerchantByAccessCode(req.AccessCode)
+	if err != nil {
+		response.NotFoundErr(c, "Invalid or expired access code")
+		return
+	}
+
+	out, err := h.chargeSvc.ChargeCard(service.ChargeCardInput{
+		MerchantID: merchant.ID,
+		AccessCode: req.AccessCode,
+		CardNumber: req.CardNumber,
+		CardExpiry: req.CardExpiry,
+		CardCVV:    req.CardCVV,
+		Email:      req.Email,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
+	if out.Status == domain.TransactionSuccess {
+		response.Success(c, http.StatusOK, "Charge successful",
+			response.ChargeSuccessful, gin.H{
+				"transaction": out.Transaction,
+				"charge":      out.Charge,
+			})
+	} else {
+		response.Error(c, http.StatusBadRequest, "Charge failed",
+			response.ChargeFailed, []response.ErrorField{
+				{Field: "charge", Message: out.ErrorCode},
+			})
+	}
+}
+
+// PublicChargeMobileMoney handles POST /api/v1/public/charge/mobile_money
+func (h *ChargeHandler) PublicChargeMobileMoney(c *gin.Context) {
+	var req chargeMomoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	if req.AccessCode == "" {
+		response.ValidationErr(c, []response.ErrorField{
+			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+		})
+		return
+	}
+
+	merchant, err := h.chargeSvc.GetMerchantByAccessCode(req.AccessCode)
+	if err != nil {
+		response.NotFoundErr(c, "Invalid or expired access code")
+		return
+	}
+
+	validProviders := map[string]bool{
+		string(domain.ProviderMTN):        true,
+		string(domain.ProviderVodafone):   true,
+		string(domain.ProviderAirtelTigo): true,
+	}
+	if !validProviders[req.Provider] {
+		response.ValidationErr(c, []response.ErrorField{
+			{Field: "provider", Message: "Supported providers: mtn, vodafone, airteltigo"},
+		})
+		return
+	}
+
+	out, err := h.chargeSvc.ChargeMobileMoney(service.ChargeMomoInput{
+		MerchantID: merchant.ID,
+		AccessCode: req.AccessCode,
+		Phone:      req.Phone,
+		Provider:   domain.MomoProvider(req.Provider),
+		Email:      req.Email,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Mobile money prompt sent",
+		response.ChargePending, gin.H{
+			"transaction": out.Transaction,
+			"charge":      out.Charge,
+		})
+}
+
+// PublicChargeBank handles POST /api/v1/public/charge/bank
+func (h *ChargeHandler) PublicChargeBank(c *gin.Context) {
+	var req chargeBankRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	if req.AccessCode == "" {
+		response.ValidationErr(c, []response.ErrorField{
+			{Field: "access_code", Message: "access_code is required for checkout page charges"},
+		})
+		return
+	}
+
+	merchant, err := h.chargeSvc.GetMerchantByAccessCode(req.AccessCode)
+	if err != nil {
+		response.NotFoundErr(c, "Invalid or expired access code")
+		return
+	}
+
+	out, err := h.chargeSvc.ChargeBank(service.ChargeBankInput{
+		MerchantID:    merchant.ID,
+		AccessCode:    req.AccessCode,
+		BankCode:      req.BankCode,
+		AccountNumber: req.AccountNumber,
+		Email:         req.Email,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
+	if out.Status == domain.TransactionSuccess {
+		response.Success(c, http.StatusOK, "Bank charge successful",
+			response.ChargeSuccessful, gin.H{
+				"transaction": out.Transaction,
+				"charge":      out.Charge,
+			})
+	} else {
+		response.Error(c, http.StatusBadRequest, "Bank charge failed",
+			response.ChargeFailed, []response.ErrorField{
+				{Field: "charge", Message: out.ErrorCode},
+			})
+	}
+}
+
 // handleChargeError maps charge-specific sentinel errors to responses.
 // Extracted into its own method because all three charge endpoints
 // share the same error mapping, DRY over the common cases.

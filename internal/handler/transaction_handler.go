@@ -218,3 +218,33 @@ func (h *TransactionHandler) Refund(c *gin.Context) {
 	response.Success(c, http.StatusOK, "Transaction refunded successfully",
 		response.TransactionRefunded, tx)
 }
+
+// PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
+// Called by the checkout page to load transaction details (amount, currency etc)
+// without needing the secret key. Only non-sensitive fields are returned,
+// we never expose the merchant's secret key or internal IDs through this endpoint.
+func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
+	accessCode := c.Param("access_code")
+	if accessCode == "" {
+		response.BadRequestErr(c, "Access code is required")
+		return
+	}
+
+	tx, err := h.txSvc.GetByAccessCode(accessCode)
+	if err != nil {
+		response.NotFoundErr(c, "Transaction not found or expired")
+		return
+	}
+
+	// Only return what the checkout page needs — never expose
+	// merchant secret keys, internal merchant IDs, or raw card data.
+	response.Success(c, http.StatusOK, "Transaction fetched",
+		response.TransactionFetched, gin.H{
+			"amount":       tx.Amount,
+			"currency":     tx.Currency,
+			"status":       tx.Status,
+			"reference":    tx.Reference,
+			"callback_url": tx.CallbackURL,
+			"access_code":  tx.AccessCode,
+		})
+}

@@ -14,6 +14,7 @@ import (
 type ChargeService struct {
 	chargeRepo      *repository.ChargeRepository
 	transactionRepo *repository.TransactionRepository
+	merchantRepo    *repository.MerchantRepository
 	simulatorSvc    *SimulatorService
 	webhookSvc      *WebhookService
 }
@@ -21,12 +22,14 @@ type ChargeService struct {
 func NewChargeService(
 	chargeRepo *repository.ChargeRepository,
 	transactionRepo *repository.TransactionRepository,
+	merchantRepo *repository.MerchantRepository,
 	simulatorSvc *SimulatorService,
 	webhookSvc *WebhookService,
 ) *ChargeService {
 	return &ChargeService{
 		chargeRepo:      chargeRepo,
 		transactionRepo: transactionRepo,
+		merchantRepo:    merchantRepo,
 		simulatorSvc:    simulatorSvc,
 		webhookSvc:      webhookSvc,
 	}
@@ -322,4 +325,25 @@ func detectCardBrand(cardNumber string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// GetMerchantByAccessCode looks up the merchant who owns the transaction
+// that this access code belongs to. Used by the public charge endpoints
+// to resolve the merchant without an Authorization header.
+// Returns an error if the access code is invalid or the transaction
+// is not in pending state — you can't charge a completed transaction.
+func (s *ChargeService) GetMerchantByAccessCode(accessCode string) (*domain.Merchant, error) {
+	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+
+	// We need the merchant to apply their scenario config during simulation.
+	// The transaction carries the merchant_id — one DB lookup gets us there.
+	merchant, err := s.merchantRepo.FindByID(tx.MerchantID)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+
+	return merchant, nil
 }

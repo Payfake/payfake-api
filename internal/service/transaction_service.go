@@ -244,3 +244,15 @@ func (s *TransactionService) ForceOutcome(reference, merchantID, status, errorCo
 	tx.Status = newStatus
 	return tx, nil
 }
+
+// GetByAccessCode retrieves a transaction by access code for the
+// public checkout page. Returns the transaction if found and pending
+// expired or already-completed transactions return an error so the
+// checkout page can show an appropriate message.
+func (s *TransactionService) GetByAccessCode(accessCode string) (*domain.Transaction, error) {
+	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	return tx, nil
+}
