@@ -21,7 +21,7 @@ func main() {
 	}
 
 	// Pass JWT config into the router so it can wire the auth service.
-	r := router.Setup(db.DB, cfg.JWT.Secret, cfg.JWT.ExpiryHours)
+	r := router.Setup(db.DB, cfg.JWT.Secret, cfg.JWT.ExpiryHours, cfg.App.FrontendURL)
 
 	addr := fmt.Sprintf(":%s", cfg.App.Port)
 	log.Printf("[payfake] server starting on %s", addr)

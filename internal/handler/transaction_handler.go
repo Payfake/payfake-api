@@ -220,9 +220,10 @@ func (h *TransactionHandler) Refund(c *gin.Context) {
 }
 
 // / PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
-// Called by the React checkout page on mount to load transaction details.
-// Returns only what the checkout UI needs, amount, currency, status.
-// Never exposes secret keys, merchant IDs or internal data.
+// Called by the React checkout page on mount.
+// Returns everything the checkout UI needs to render, amount, currency,
+// merchant branding (name), and the customer email pre-filled on the form.
+// Mirrors Paystack's popup which shows the merchant name and customer email.
 func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 	accessCode := c.Param("access_code")
 	if accessCode == "" {
@@ -236,16 +237,39 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 		return
 	}
 
-	// Return only what the checkout page needs.
-	// The React app uses this to display the amount and currency,
-	// and after payment redirects to callback_url with the reference.
+	// Fetch the merchant so we can return their business name and
+	// public key for display in the checkout UI.
+	// The checkout page shows "Pay [BusinessName]" just like Paystack does.
+	merchant, err := h.txSvc.GetMerchantForTransaction(tx.MerchantID)
+	if err != nil {
+		response.InternalErr(c, "Failed to load transaction details")
+		return
+	}
+
 	response.Success(c, http.StatusOK, "Transaction fetched",
 		response.TransactionFetched, gin.H{
+			// Transaction details
 			"amount":       tx.Amount,
 			"currency":     tx.Currency,
 			"status":       tx.Status,
 			"reference":    tx.Reference,
 			"callback_url": tx.CallbackURL,
 			"access_code":  tx.AccessCode,
+
+			// Merchant branding, shown in the checkout header.
+			// public_key is safe to expose, it's designed for frontend use.
+			// We never return secret_key here.
+			"merchant": gin.H{
+				"business_name": merchant.BusinessName,
+				"public_key":    merchant.PublicKey,
+			},
+
+			// Customer email pre-fills the email field on the checkout form.
+			// Saves the customer from typing it, same UX as Paystack popup.
+			"customer": gin.H{
+				"email":      tx.Customer.Email,
+				"first_name": tx.Customer.FirstName,
+				"last_name":  tx.Customer.LastName,
+			},
 		})
 }

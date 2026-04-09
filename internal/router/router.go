@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
+func Setup(db *gorm.DB, jwtSecret, jwtExpiry, frontendURL string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
@@ -34,7 +34,7 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 	customerSvc := service.NewCustomerService(customerRepo)
 	simulatorSvc := service.NewSimulatorService(scenarioRepo)
 	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo)
-	txSvc := service.NewTransactionService(transactionRepo, customerSvc)
+	txSvc := service.NewTransactionService(transactionRepo, customerSvc, merchantRepo)
 	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, simulatorSvc, webhookSvc)
 	scenarioSvc := service.NewScenarioService(scenarioRepo)
 	logSvc := service.NewLogService(logRepo)
@@ -52,6 +52,10 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 	r.GET("/health", handler.HealthCheck())
 
 	v1 := r.Group("/api/v1")
+
+	// Auth, transaction, charge, customer, control routes stay exactly
+	// as they are, private CORS applied to the whole v1 group.
+	v1.Use(middleware.CORSPrivate(frontendURL))
 
 	auth := v1.Group("/auth")
 	{
@@ -91,6 +95,7 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry string) *gin.Engine {
 	// Authenticated via access_code in the request body or URL param.
 	// The merchant's secret key never touches the frontend at any point.
 	public := v1.Group("/public")
+	public.Use(middleware.CORSPublic())
 	{
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
 		public.POST("/charge/card", chargeHandler.PublicChargeCard)

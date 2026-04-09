@@ -14,15 +14,18 @@ import (
 type TransactionService struct {
 	transactionRepo *repository.TransactionRepository
 	customerService *CustomerService
+	merchantRepo    *repository.MerchantRepository
 }
 
 func NewTransactionService(
 	transactionRepo *repository.TransactionRepository,
 	customerService *CustomerService,
+	merchantRepo *repository.MerchantRepository,
 ) *TransactionService {
 	return &TransactionService{
 		transactionRepo: transactionRepo,
 		customerService: customerService,
+		merchantRepo:    merchantRepo,
 	}
 }
 
@@ -106,7 +109,7 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	// The authorization URL is what the frontend opens.
 	// It points to Payfake's payment popup page, the same UX
 	// as Paystack's hosted payment page but running locally.
-	authURL := fmt.Sprintf("http://localhost:8080/pay/%s", accessCode)
+	authURL := fmt.Sprintf("http://localhost:8080/%s", accessCode)
 
 	tx := &domain.Transaction{
 		Base:        domain.Base{ID: uid.NewTransactionID()},
@@ -255,4 +258,15 @@ func (s *TransactionService) GetByAccessCode(accessCode string) (*domain.Transac
 		return nil, ErrTransactionNotFound
 	}
 	return tx, nil
+}
+
+// GetMerchantForTransaction retrieves the merchant who owns a transaction.
+// Used by the public checkout endpoint to return merchant branding details
+// without exposing any sensitive merchant data to the frontend.
+func (s *TransactionService) GetMerchantForTransaction(merchantID string) (*domain.Merchant, error) {
+	merchant, err := s.merchantRepo.FindByID(merchantID)
+	if err != nil {
+		return nil, ErrMerchantNotFound
+	}
+	return merchant, nil
 }
