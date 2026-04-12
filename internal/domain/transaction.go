@@ -2,8 +2,6 @@ package domain
 
 import (
 	"time"
-
-	"github.com/GordenArcher/payfake/internal/domain"
 )
 
 type TransactionStatus string
@@ -33,7 +31,6 @@ const (
 
 type Transaction struct {
 	Base
-	Merchant    domain.Merchant    `gorm:"foreignKey:MerchantID" json:"-"`
 	MerchantID  string             `gorm:"type:varchar(36);not null;index" json:"merchant_id"`
 	CustomerID  string             `gorm:"type:varchar(36);index" json:"customer_id"`
 	Reference   string             `gorm:"type:varchar(100);uniqueIndex;not null" json:"reference"`
@@ -47,6 +44,10 @@ type Transaction struct {
 	PaidAt      *time.Time         `json:"paid_at"`
 	Metadata    JSON               `gorm:"type:jsonb" json:"metadata"`
 
+	// Associations, always at the bottom, after all column fields.
+	// GORM resolves foreign keys top-down so the FK column must exist
+	// before the association that references it.
+	Merchant Merchant       `gorm:"foreignKey:MerchantID" json:"-"`
 	Customer Customer       `gorm:"foreignKey:CustomerID" json:"customer"`
 	Charge   *Charge        `gorm:"foreignKey:TransactionID" json:"-"`
 	Webhooks []WebhookEvent `gorm:"foreignKey:TransactionID" json:"-"`
