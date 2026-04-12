@@ -233,43 +233,61 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 
 	tx, err := h.txSvc.GetByAccessCode(accessCode)
 	if err != nil {
-		response.NotFoundErr(c, "Transaction not found or expired")
+		// Only a genuine not-found (wrong access code) gets this message.
+		response.NotFoundErr(c, "Invalid payment link")
 		return
 	}
 
-	// Fetch the merchant so we can return their business name and
-	// public key for display in the checkout UI.
-	// The checkout page shows "Pay [BusinessName]" just like Paystack does.
-	merchant, err := h.txSvc.GetMerchantForTransaction(tx.MerchantID)
-	if err != nil {
-		response.InternalErr(c, "Failed to load transaction details")
-		return
+	// Build the base data payload, same fields regardless of status.
+	data := gin.H{
+		"amount":       tx.Amount,
+		"currency":     tx.Currency,
+		"status":       tx.Status,
+		"reference":    tx.Reference,
+		"callback_url": tx.CallbackURL,
+		"access_code":  tx.AccessCode,
+		"merchant": gin.H{
+			"business_name": tx.Merchant.BusinessName,
+			"public_key":    tx.Merchant.PublicKey,
+		},
+		"customer": gin.H{
+			"email":      tx.Customer.Email,
+			"first_name": tx.Customer.FirstName,
+			"last_name":  tx.Customer.LastName,
+		},
 	}
 
-	response.Success(c, http.StatusOK, "Transaction fetched",
-		response.TransactionFetched, gin.H{
-			// Transaction details
-			"amount":       tx.Amount,
-			"currency":     tx.Currency,
-			"status":       tx.Status,
-			"reference":    tx.Reference,
-			"callback_url": tx.CallbackURL,
-			"access_code":  tx.AccessCode,
+	// Return a meaningful message based on the current transaction status.
+	// The React checkout app uses this to decide what screen to show —
+	// payment form, success screen, failure screen, or already-paid screen.
+	switch tx.Status {
+	case domain.TransactionSuccess:
+		// Payment already completed — don't show the payment form again.
+		// Return 200 so the checkout app can render a "already paid" screen
+		// instead of an error page. The data is still included so the app
+		// can show the amount and merchant name in the confirmation.
+		response.Success(c, http.StatusOK,
+			"Payment already completed", response.TransactionVerified, data)
 
-			// Merchant branding, shown in the checkout header.
-			// public_key is safe to expose, it's designed for frontend use.
-			// We never return secret_key here.
-			"merchant": gin.H{
-				"business_name": merchant.BusinessName,
-				"public_key":    merchant.PublicKey,
-			},
+	case domain.TransactionFailed:
+		// Previous charge attempt failed, the customer can try again
+		// by initializing a new transaction. We return 200 here too
+		// so the checkout app can show a proper "payment failed, please
+		// try again" screen rather than a generic error.
+		response.Success(c, http.StatusOK,
+			"Payment was not successful", response.TransactionVerified, data)
 
-			// Customer email pre-fills the email field on the checkout form.
-			// Saves the customer from typing it, same UX as Paystack popup.
-			"customer": gin.H{
-				"email":      tx.Customer.Email,
-				"first_name": tx.Customer.FirstName,
-				"last_name":  tx.Customer.LastName,
-			},
-		})
+	case domain.TransactionAbandoned:
+		response.Success(c, http.StatusOK,
+			"This payment link has expired", response.TransactionVerified, data)
+
+	case domain.TransactionReversed:
+		response.Success(c, http.StatusOK,
+			"This payment has been refunded", response.TransactionVerified, data)
+
+	default:
+		// Pending, normal flow, show the payment form.
+		response.Success(c, http.StatusOK,
+			"Transaction fetched", response.TransactionFetched, data)
+	}
 }

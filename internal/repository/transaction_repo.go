@@ -50,14 +50,14 @@ func (r *TransactionRepository) FindByReference(reference, merchantID string) (*
 	return &tx, nil
 }
 
-// FindByAccessCode retrieves a pending transaction by its access code.
-// Access codes are short-lived tokens used by the payment popup to
-// identify which transaction is being paid. Once a transaction reaches
-// a terminal state the access code is no longer useful.
+// FindByAccessCode retrieves a transaction by its access code.
+// We no longer filter by status here, that's the service's job.
+// The repository just fetches the record, the service decides what
+// to do based on the current status.
 func (r *TransactionRepository) FindByAccessCode(accessCode string) (*domain.Transaction, error) {
 	var tx domain.Transaction
-	result := r.db.Preload("Customer").
-		Where("access_code = ? AND status = ?", accessCode, domain.TransactionPending).
+	result := r.db.Preload("Customer").Preload("Merchant").
+		Where("access_code = ?", accessCode).
 		First(&tx)
 	if result.Error != nil {
 		return nil, result.Error
