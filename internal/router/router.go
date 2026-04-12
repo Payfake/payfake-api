@@ -15,6 +15,14 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry, frontendURL string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
+
+	// CORS must be registered on the root engine BEFORE any group is defined.
+	// The browser sends an OPTIONS preflight before every cross-origin POST —
+	// if OPTIONS hits a 404 (no handler) the browser blocks the real request.
+	// Registering on the root engine ensures OPTIONS is handled for every route
+	// including /api/v1/public/* before group-level middleware even runs.
+	r.Use(middleware.CORSPublic())
+
 	r.Use(middleware.Logger())
 	r.Use(middleware.RateLimit(200, time.Minute))
 
@@ -50,6 +58,22 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry, frontendURL string) *gin.Engine {
 	// Routes
 
 	r.GET("/health", handler.HealthCheck())
+
+	// Public checkout routes, no secret key required.
+	// Called directly from the React checkout page running in the customer's browser.
+	// Authenticated via access_code in the request body or URL param.
+	// The merchant's secret key never touches the frontend at any point.
+	//
+	// IMPORTANT: Public routes are defined at the root level, NOT as a subgroup of v1.
+	// This prevents the restrictive CORSPrivate middleware (applied to v1) from
+	// interfering with the permissive CORSPublic middleware needed for the checkout.
+	public := r.Group("/api/v1/public")
+	{
+		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
+		public.POST("/charge/card", chargeHandler.PublicChargeCard)
+		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
+		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
+	}
 
 	v1 := r.Group("/api/v1")
 
@@ -88,19 +112,6 @@ func Setup(db *gorm.DB, jwtSecret, jwtExpiry, frontendURL string) *gin.Engine {
 		charge.POST("/mobile_money", chargeHandler.ChargeMobileMoney)
 		charge.POST("/bank", chargeHandler.ChargeBank)
 		charge.GET("/:reference", chargeHandler.FetchCharge)
-	}
-
-	// Public checkout routes, no secret key required.
-	// Called directly from the React checkout page running in the customer's browser.
-	// Authenticated via access_code in the request body or URL param.
-	// The merchant's secret key never touches the frontend at any point.
-	public := v1.Group("/public")
-	public.Use(middleware.CORSPublic())
-	{
-		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
-		public.POST("/charge/card", chargeHandler.PublicChargeCard)
-		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
-		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
 	}
 
 	customer := v1.Group("/customer")

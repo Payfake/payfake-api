@@ -21,15 +21,8 @@ import (
 //     Dashboard and API routes should only be called from known origins.
 func CORSPublic() gin.HandlerFunc {
 	return cors.New(cors.Config{
-		// Allow any origin for public checkout endpoints.
-		// The access_code is the security boundary, not the origin.
-		// Paystack's own public charge endpoints work the same way.
 		AllowAllOrigins: true,
-
-		AllowMethods: []string{
-			"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
-		},
-
+		AllowMethods:    []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders: []string{
 			"Origin",
 			"Content-Type",
@@ -37,20 +30,11 @@ func CORSPublic() gin.HandlerFunc {
 			"Authorization",
 			"X-Request-ID",
 		},
-
-		ExposeHeaders: []string{
-			"X-Request-ID",
-		},
-
-		// We don't allow credentials on public routes, no cookies,
-		// no Authorization headers from the browser's credential store.
-		// The access_code goes in the request body, not a header.
+		ExposeHeaders:    []string{"X-Request-ID"},
 		AllowCredentials: false,
-
-		MaxAge: 12 * time.Hour,
+		MaxAge:           12 * time.Hour,
 	})
 }
-
 func CORSPrivate(allowedOrigin string) gin.HandlerFunc {
 	return cors.New(cors.Config{
 		// Only allow requests from the configured frontend URL.

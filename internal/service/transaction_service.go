@@ -109,7 +109,7 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	// The authorization URL is what the frontend opens.
 	// It points to Payfake's payment popup page, the same UX
 	// as Paystack's hosted payment page but running locally.
-	authURL := fmt.Sprintf("http://localhost:8080/%s", accessCode)
+	authURL := fmt.Sprintf("http://localhost:3000/%s", accessCode)
 
 	tx := &domain.Transaction{
 		Base:        domain.Base{ID: uid.NewTransactionID()},
