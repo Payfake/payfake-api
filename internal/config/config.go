@@ -30,8 +30,9 @@ type DatabaseConfig struct {
 }
 
 type JWTConfig struct {
-	Secret      string
-	ExpiryHours string
+	Secret              string
+	AccessExpiryMinutes string
+	RefreshExpiryDays   string
 }
 
 func Load() (*Config, error) {
@@ -53,8 +54,9 @@ func Load() (*Config, error) {
 			SSLMode:  godenv.Get("DB_SSLMODE", "disable"),
 		},
 		JWT: JWTConfig{
-			Secret:      godenv.Get("JWT_SECRET", ""),
-			ExpiryHours: godenv.Get("JWT_EXPIRY_HOURS", "24"),
+			Secret:              godenv.Get("JWT_SECRET", ""),
+			AccessExpiryMinutes: godenv.Get("JWT_ACCESS_EXPIRY_MINUTES", "15"),
+			RefreshExpiryDays:   godenv.Get("JWT_REFRESH_EXPIRY_DAYS", "7"),
 		},
 	}
 

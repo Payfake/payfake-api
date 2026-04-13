@@ -108,3 +108,22 @@ func (r *MerchantRepository) EmailExists(email string) (bool, error) {
 		Count(&count)
 	return count > 0, result.Error
 }
+
+// UpdatePassword updates only the password column.
+// Uses Select to ensure only password is touched, never a full Save
+// which could accidentally wipe other fields.
+func (r *MerchantRepository) UpdatePassword(id, hashedPassword string) error {
+	return r.db.Model(&domain.Merchant{}).
+		Where("id = ?", id).
+		Update("password", hashedPassword).Error
+}
+
+// UpdateProfile updates merchant business name and webhook URL.
+func (r *MerchantRepository) UpdateProfile(id, businessName, webhookURL string) error {
+	return r.db.Model(&domain.Merchant{}).
+		Where("id = ?", id).
+		Updates(map[string]any{
+			"business_name": businessName,
+			"webhook_url":   webhookURL,
+		}).Error
+}

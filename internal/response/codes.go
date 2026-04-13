@@ -186,4 +186,14 @@ const (
 	MethodNotAllowed Code = "METHOD_NOT_ALLOWED"
 	// Request is malformed, usually a missing required field or wrong content type.
 	BadRequest Code = "BAD_REQUEST"
+
+	// Merchant
+	MerchantFetched Code = "MERCHANT_FETCHED"
+	MerchantUpdated Code = "MERCHANT_UPDATED"
+
+	// Stats
+	StatsFetched Code = "STATS_FETCHED"
+
+	// Auth — token refresh
+	AuthRefreshSuccess Code = "AUTH_REFRESH_SUCCESS"
 )

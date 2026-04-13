@@ -20,8 +20,14 @@ func main() {
 		log.Fatalf("[payfake] database error: %v", err)
 	}
 
-	// Pass JWT config into the router so it can wire the auth service.
-	r := router.Setup(db.DB, cfg.JWT.Secret, cfg.JWT.ExpiryHours, cfg.App.FrontendURL)
+	r := router.Setup(
+		db.DB,
+		cfg.JWT.Secret,
+		cfg.JWT.AccessExpiryMinutes,
+		cfg.JWT.RefreshExpiryDays,
+		cfg.App.FrontendURL,
+		cfg.App.Env,
+	)
 
 	addr := fmt.Sprintf(":%s", cfg.App.Port)
 	log.Printf("[payfake] server starting on %s", addr)

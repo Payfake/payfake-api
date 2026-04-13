@@ -14,31 +14,21 @@ import (
 type AuthHandler struct {
 	db      *gorm.DB
 	authSvc *service.AuthService
+	isProd  bool
 }
 
-func NewAuthHandler(db *gorm.DB, authSvc *service.AuthService) *AuthHandler {
-	return &AuthHandler{db: db, authSvc: authSvc}
+func NewAuthHandler(db *gorm.DB, authSvc *service.AuthService, isProd bool) *AuthHandler {
+	return &AuthHandler{db: db, authSvc: authSvc, isProd: isProd}
 }
 
-// registerRequest is the expected shape of the registration request body.
-// We define this inline in the handler because it is purely an HTTP concern
-// the shape of what comes over the wire. The service has its own input
-// struct (RegisterInput) that is the business concern. Keeping them
-// separate means changing the API shape doesn't force changes in the service.
 type registerRequest struct {
 	BusinessName string `json:"business_name" binding:"required"`
 	Email        string `json:"email" binding:"required,email"`
 	Password     string `json:"password" binding:"required,min=8"`
 }
 
-// Register handles POST /api/v1/auth/register
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req registerRequest
-
-	// ShouldBindJSON parses the request body into req and validates
-	// the binding tags (required, email, min=8 etc).
-	// If validation fails it returns an error with details about
-	// which fields failed, we surface that in the errors array.
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
@@ -49,12 +39,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Email:        req.Email,
 		Password:     req.Password,
 	})
-
 	if err != nil {
-		// Map sentinel errors to specific response codes.
-		// This is the key pattern, service returns a known error,
-		// handler maps it to the correct HTTP status and code.
-		// Any unknown error falls through to the generic 500.
 		if errors.Is(err, service.ErrEmailTaken) {
 			response.Error(c, http.StatusConflict, "Email is already registered",
 				response.AuthEmailTaken, []response.ErrorField{
@@ -66,6 +51,15 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Set HttpOnly cookies, the dashboard reads auth state from these,
+	// never from localStorage. This is the more secure approach.
+	middleware.SetAuthCookies(c,
+		out.Tokens.AccessToken,
+		out.Tokens.RefreshToken,
+		out.Tokens.AccessExpiry,
+		h.isProd,
+	)
+
 	response.Success(c, http.StatusCreated, "Account created successfully",
 		response.AuthRegisterSuccess, gin.H{
 			"merchant": gin.H{
@@ -74,7 +68,10 @@ func (h *AuthHandler) Register(c *gin.Context) {
 				"email":         out.Merchant.Email,
 				"public_key":    out.Merchant.PublicKey,
 			},
-			"token": out.Token,
+			// We still return the access token in the body so the Go/Python/JS/Rust
+			// SDKs can use it without cookies. Dashboard uses the cookie.
+			"token":         out.Tokens.AccessToken,
+			"access_expiry": out.Tokens.AccessExpiry,
 		})
 }
 
@@ -83,10 +80,8 @@ type loginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-// Login handles POST /api/v1/auth/login
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req loginRequest
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
@@ -96,12 +91,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Email:    req.Email,
 		Password: req.Password,
 	})
-
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) ||
 			errors.Is(err, service.ErrMerchantInactive) {
-			// Same message for both cases, never tell the client
-			// whether the email exists or the password is wrong.
 			response.Error(c, http.StatusUnauthorized, "Invalid email or password",
 				response.AuthInvalidCredentials, []response.ErrorField{})
 			return
@@ -109,6 +101,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		response.InternalErr(c, "Failed to login")
 		return
 	}
+
+	middleware.SetAuthCookies(c,
+		out.Tokens.AccessToken,
+		out.Tokens.RefreshToken,
+		out.Tokens.AccessExpiry,
+		h.isProd,
+	)
 
 	response.Success(c, http.StatusOK, "Login successful",
 		response.AuthLoginSuccess, gin.H{
@@ -118,21 +117,87 @@ func (h *AuthHandler) Login(c *gin.Context) {
 				"email":         out.Merchant.Email,
 				"public_key":    out.Merchant.PublicKey,
 			},
-			"token": out.Token,
+			"token":         out.Tokens.AccessToken,
+			"access_expiry": out.Tokens.AccessExpiry,
+		})
+}
+
+// Refresh handles POST /api/v1/auth/refresh
+// The browser sends the payfake_refresh cookie automatically.
+// We validate it, issue a new token pair, and set fresh cookies.
+// The old refresh token is invalidated by rotation, a rotated token
+// cannot be used again because we've replaced it with a new one.
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	refreshToken, err := c.Cookie("payfake_refresh")
+	if err != nil || refreshToken == "" {
+		response.UnauthorizedErr(c, "Refresh token is required")
+		return
+	}
+
+	tokens, err := h.authSvc.RefreshTokens(refreshToken)
+	if err != nil {
+		// Clear cookies on refresh failure, the session is invalid.
+		middleware.ClearAuthCookies(c)
+		if errors.Is(err, service.ErrTokenExpired) {
+			response.Error(c, http.StatusUnauthorized, "Session expired, please login again",
+				response.AuthTokenExpired, []response.ErrorField{})
+			return
+		}
+		response.UnauthorizedErr(c, "Invalid refresh token")
+		return
+	}
+
+	middleware.SetAuthCookies(c,
+		tokens.AccessToken,
+		tokens.RefreshToken,
+		tokens.AccessExpiry,
+		h.isProd,
+	)
+
+	response.Success(c, http.StatusOK, "Token refreshed",
+		response.AuthLoginSuccess, gin.H{
+			"access_token":  tokens.AccessToken,
+			"access_expiry": tokens.AccessExpiry,
 		})
 }
 
 // Logout handles POST /api/v1/auth/logout
-// JWT is stateless, there's nothing to invalidate server-side.
-// We return a success response and the client discards the token.
-// In a production system you'd maintain a token blocklist in Redis
-// to support true logout before expiry, we keep it simple for now.
+// Clears both cookies, the browser discards them immediately.
 func (h *AuthHandler) Logout(c *gin.Context) {
+	middleware.ClearAuthCookies(c)
 	response.Success(c, http.StatusOK, "Logged out successfully",
 		response.AuthLogoutSuccess, nil)
 }
 
-// GetKeys handles GET /api/v1/auth/keys
+// Me handles GET /api/v1/auth/me
+// Called on dashboard mount to hydrate the current merchant's profile.
+// If the access cookie is valid this returns the merchant, otherwise
+// the dashboard knows to redirect to login.
+func (h *AuthHandler) Me(c *gin.Context) {
+	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
+	if !ok {
+		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	merchant, err := h.authSvc.GetMerchant(merchantID)
+	if err != nil {
+		response.InternalErr(c, "Failed to fetch profile")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Profile fetched",
+		response.AuthKeysFetched, gin.H{
+			"id":            merchant.ID,
+			"business_name": merchant.BusinessName,
+			"email":         merchant.Email,
+			"public_key":    merchant.PublicKey,
+			"webhook_url":   merchant.WebhookURL,
+			"is_active":     merchant.IsActive,
+			"created_at":    merchant.CreatedAt,
+		})
+}
+
 func (h *AuthHandler) GetKeys(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -153,7 +218,6 @@ func (h *AuthHandler) GetKeys(c *gin.Context) {
 		})
 }
 
-// RegenerateKeys handles POST /api/v1/auth/keys/regenerate
 func (h *AuthHandler) RegenerateKeys(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {

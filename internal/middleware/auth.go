@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"strings"
+	"time"
 
 	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/gin-gonic/gin"
@@ -78,37 +79,82 @@ func RequireSecretKey(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-// RequireJWT is the authentication middleware for dashboard routes.
-// The dashboard uses JWT (issued on login) instead of API keys because:
-// 1. Dashboard sessions should expire, JWT has built-in expiry
-// 2. API keys are long-lived credentials, not suitable for UI sessions
-// 3. Separating concerns means rotating an API key doesn't log you out
-// JWT validation logic will be implemented in the auth service —
-// we keep the middleware thin and delegate the actual verification.
+// RequireJWT checks for a valid access token in either:
+// 1. The payfake_access cookie (dashboard, HttpOnly, set by login)
+// 2. The Authorization header (SDK/API calls Bearer token)
+// Cookie takes priority since it's the more secure option for browsers.
+// The Authorization header fallback keeps the existing SDK behaviour working.
 func RequireJWT() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
+		var token string
 
-		if authHeader == "" {
-			response.UnauthorizedErr(c, "Authorization header is required")
-			c.Abort()
-			return
+		// Try cookie first, HttpOnly cookies can't be read by JavaScript
+		// which protects against XSS attacks stealing the token.
+		cookieToken, err := c.Cookie("payfake_access")
+		if err == nil && cookieToken != "" {
+			token = cookieToken
+		} else {
+			// Fall back to Authorization header for SDK/programmatic access.
+			authHeader := c.GetHeader("Authorization")
+			if authHeader == "" {
+				response.UnauthorizedErr(c, "Authorization required")
+				c.Abort()
+				return
+			}
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+				response.UnauthorizedErr(c, "Authorization header format must be: Bearer <token>")
+				c.Abort()
+				return
+			}
+			token = parts[1]
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			response.UnauthorizedErr(c, "Authorization header format must be: Bearer <token>")
-			c.Abort()
-			return
-		}
-
-		// Store the raw token string in context.
-		// The actual JWT parsing and claims extraction happens in the
-		// auth service, middleware stays thin, business logic stays
-		// in the service layer where it belongs.
-		c.Set("jwt_token", parts[1])
+		c.Set("jwt_token", token)
 		c.Next()
 	}
+}
+
+// SetAuthCookies writes the access and refresh tokens as HttpOnly cookies.
+// HttpOnly = JavaScript cannot read these cookies, only the browser sends them.
+// SameSite=Strict = cookies are only sent on same-site requests, blocking CSRF.
+// Secure = cookies only sent over HTTPS in production.
+// We set both tokens here so login and refresh both call one function.
+func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry time.Time, isProd bool) {
+	accessMaxAge := int(time.Until(accessExpiry).Seconds())
+	refreshMaxAge := 7 * 24 * 60 * 60 // 7 days in seconds
+
+	// Access token cookie, short lived, used on every authenticated request.
+	c.SetCookie(
+		"payfake_access",
+		accessToken,
+		accessMaxAge,
+		"/",
+		"",
+		isProd, // Secure flag, HTTPS only in production
+		true,   // HttpOnly, not accessible via JavaScript
+	)
+
+	// Refresh token cookie, long lived, only sent to the refresh endpoint.
+	// Path="/api/v1/auth/refresh" means the browser only sends this cookie
+	// to that specific endpoint, not to every API call. This limits the
+	// window where a stolen refresh token could be used.
+	c.SetCookie(
+		"payfake_refresh",
+		refreshToken,
+		refreshMaxAge,
+		"/api/v1/auth/refresh",
+		"",
+		isProd,
+		true,
+	)
+}
+
+// ClearAuthCookies removes both auth cookies on logout.
+// Setting MaxAge=-1 tells the browser to delete the cookie immediately.
+func ClearAuthCookies(c *gin.Context) {
+	c.SetCookie("payfake_access", "", -1, "/", "", false, true)
+	c.SetCookie("payfake_refresh", "", -1, "/api/v1/auth/refresh", "", false, true)
 }
 
 // GetMerchant is a convenience helper that handlers call to retrieve
