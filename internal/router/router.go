@@ -14,22 +14,18 @@ import (
 func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	// Single CORS middleware on root engine, runs before everything.
+	// Handles OPTIONS preflight for every route in one place.
+	r.Use(middleware.CORS(frontendURL))
+
 	r.Use(middleware.RequestID())
-
-	// CORS must be registered on the root engine BEFORE any group is defined.
-	// The browser sends an OPTIONS preflight before every cross-origin POST —
-	// if OPTIONS hits a 404 (no handler) the browser blocks the real request.
-	// Registering on the root engine ensures OPTIONS is handled for every route
-	// including /api/v1/public/* before group-level middleware even runs.
-	r.Use(middleware.CORSPublic())
-
 	r.Use(middleware.Logger())
 	r.Use(middleware.RateLimit(200, time.Minute))
 
 	isProd := appEnv == "production"
 
 	// Repositories
-
 	merchantRepo := repository.NewMerchantRepository(db)
 	customerRepo := repository.NewCustomerRepository(db)
 	transactionRepo := repository.NewTransactionRepository(db)
@@ -40,7 +36,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	statsRepo := repository.NewStatsRepository(db)
 
 	// Services
-
 	authSvc := service.NewAuthService(merchantRepo, jwtSecret, accessExpiry, refreshExpiry)
 	merchantSvc := service.NewMerchantService(merchantRepo)
 	customerSvc := service.NewCustomerService(customerRepo)
@@ -53,7 +48,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	statsSvc := service.NewStatsService(statsRepo)
 
 	// Handlers
-
 	authHandler := handler.NewAuthHandler(db, authSvc, isProd)
 	merchantHandler := handler.NewMerchantHandler(db, merchantSvc, authSvc)
 	transactionHandler := handler.NewTransactionHandler(db, txSvc)
@@ -62,18 +56,9 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	controlHandler := handler.NewControlHandler(db, scenarioSvc, webhookSvc, txSvc, logSvc, authSvc)
 	statsHandler := handler.NewStatsHandler(db, statsSvc, authSvc)
 
-	// Routes
-
 	r.GET("/health", handler.HealthCheck())
 
-	// Public checkout routes, no secret key required.
-	// Called directly from the React checkout page running in the customer's browser.
-	// Authenticated via access_code in the request body or URL param.
-	// The merchant's secret key never touches the frontend at any point.
-	//
-	// IMPORTANT: Public routes are defined at the root level, NOT as a subgroup of v1.
-	// This prevents the restrictive CORSPrivate middleware (applied to v1) from
-	// interfering with the permissive CORSPublic middleware needed for the checkout.
+	// Public = no auth middleware, access_code authenticates
 	public := r.Group("/api/v1/public")
 	{
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
@@ -83,10 +68,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	}
 
 	v1 := r.Group("/api/v1")
-
-	// Auth, transaction, charge, customer, control routes stay exactly
-	// as they are, private CORS applied to the whole v1 group.
-	v1.Use(middleware.CORSPrivate(frontendURL))
 
 	auth := v1.Group("/auth")
 	{

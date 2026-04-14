@@ -60,6 +60,11 @@ type RegisterInput struct {
 	Password     string
 }
 
+type LoginInput struct {
+	Email    string
+	Password string
+}
+
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
@@ -204,6 +209,13 @@ func (s *AuthService) ValidateAccessToken(tokenString string) (merchantID, email
 		return "", "", ErrTokenInvalid
 	}
 	return merchantID, email, nil
+}
+
+// ValidateJWT satisfies the middleware.JWTValidator interface.
+// It validates access tokens only, refresh tokens are rejected.
+// This is the method the middleware calls on every protected route.
+func (s *AuthService) ValidateJWT(tokenString string) (string, string, error) {
+	return s.ValidateAccessToken(tokenString)
 }
 
 func (s *AuthService) GetMerchant(merchantID string) (*domain.Merchant, error) {

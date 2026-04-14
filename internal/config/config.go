@@ -43,7 +43,7 @@ func Load() (*Config, error) {
 			Name:        godenv.Get("APP_NAME", "payfake"),
 			Env:         godenv.Get("APP_ENV", "development"),
 			Port:        godenv.Get("APP_PORT", "8080"),
-			FrontendURL: godenv.Get("FRONTEND_URL", "http://localhost:5173"),
+			FrontendURL: godenv.Get("FRONTEND_URL", "http://localhost:3000"),
 		},
 		Database: DatabaseConfig{
 			Host:     godenv.Get("DB_HOST", "localhost"),
