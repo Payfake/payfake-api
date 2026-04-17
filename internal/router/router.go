@@ -64,6 +64,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	public := r.Group("/api/v1/public")
 	{
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
+		public.GET("/transaction/verify/:reference", transactionHandler.PublicVerify)
 		public.POST("/charge/card", chargeHandler.PublicChargeCard)
 		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
 		public.POST("/charge/bank", chargeHandler.PublicChargeBank)

@@ -57,6 +57,20 @@ func (r *TransactionRepository) FindByReference(reference, merchantID string) (*
 	return &tx, nil
 }
 
+// FindByReferenceOnly retrieves a transaction by reference without merchant scope.
+// Used by public endpoints where merchant ID is not available (checkout page polling).
+// Returns limited data, only what's needed for public display.
+func (r *TransactionRepository) FindByReferenceOnly(reference string) (*domain.Transaction, error) {
+	var tx domain.Transaction
+	err := r.db.Preload("Customer").Preload("Merchant").
+		Where("reference = ?", reference).
+		First(&tx).Error
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
 // FindByAccessCode retrieves a transaction by its access code.
 // We no longer filter by status here, that's the service's job.
 // The repository just fetches the record, the service decides what

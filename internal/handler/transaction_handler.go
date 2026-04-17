@@ -123,6 +123,35 @@ func (h *TransactionHandler) Verify(c *gin.Context) {
 		response.TransactionVerified, tx)
 }
 
+// PublicVerify handles GET /api/v1/public/transaction/verify/:reference
+// No authentication required - called from checkout page for polling
+func (h *TransactionHandler) PublicVerify(c *gin.Context) {
+	reference := c.Param("reference")
+	if reference == "" {
+		response.BadRequestErr(c, "Reference is required")
+		return
+	}
+
+	tx, err := h.txSvc.VerifyPublic(reference)
+	if err != nil {
+		if errors.Is(err, service.ErrTransactionNotFound) {
+			response.NotFoundErr(c, "Transaction not found")
+			return
+		}
+		response.InternalErr(c, "Failed to verify transaction")
+		return
+	}
+
+	// Return limited public information
+	response.Success(c, http.StatusOK, "Transaction verified",
+		"TRANSACTION_VERIFIED", gin.H{
+			"reference": tx.Reference,
+			"status":    tx.Status,
+			"amount":    tx.Amount,
+			"currency":  tx.Currency,
+		})
+}
+
 // Fetch handles GET /api/v1/transaction/:id
 func (h *TransactionHandler) Fetch(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)

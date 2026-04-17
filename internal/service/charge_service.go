@@ -145,7 +145,7 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		// opens this in an iframe or redirect, simulates the
 		// customer completing verification, then the flow resolves.
 		charge.FlowStatus = domain.FlowOpenURL
-		charge.ThreeDSURL = fmt.Sprintf("http://localhost:8080/api/v1/simulate/3ds/%s", tx.Reference)
+		charge.ThreeDSURL = fmt.Sprintf("http://localhost:3000/simulate/3ds/%s", tx.Reference)
 	} else {
 		// Local Ghana cards start with PIN entry.
 		charge.FlowStatus = domain.FlowSendPIN

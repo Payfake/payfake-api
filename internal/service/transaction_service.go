@@ -156,6 +156,19 @@ func (s *TransactionService) Verify(reference, merchantID string) (*domain.Trans
 	return tx, nil
 }
 
+// VerifyPublic retrieves a transaction by reference without requiring merchant ID.
+// Used by the public checkout page for polling transaction status.
+func (s *TransactionService) VerifyPublic(reference string) (*domain.Transaction, error) {
+	tx, err := s.transactionRepo.FindByReferenceOnly(reference)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTransactionNotFound
+		}
+		return nil, fmt.Errorf("failed to find transaction: %w", err)
+	}
+	return tx, nil
+}
+
 // Get retrieves a single transaction by ID.
 func (s *TransactionService) Get(id, merchantID string) (*domain.Transaction, error) {
 	tx, err := s.transactionRepo.FindByID(id, merchantID)
