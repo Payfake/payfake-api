@@ -53,13 +53,14 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	transactionHandler := handler.NewTransactionHandler(db, txSvc)
 	chargeHandler := handler.NewChargeHandler(db, chargeSvc)
 	customerHandler := handler.NewCustomerHandler(db, customerSvc, txSvc)
-	controlHandler := handler.NewControlHandler(db, scenarioSvc, webhookSvc, txSvc, logSvc, authSvc)
+	controlHandler := handler.NewControlHandler(db, scenarioSvc, webhookSvc, txSvc, logSvc, authSvc, customerSvc)
 	statsHandler := handler.NewStatsHandler(db, statsSvc, authSvc)
+	webhookHandler := handler.NewWebhookHandler(db, merchantSvc, authSvc)
 
 	r.GET("/health", handler.HealthCheck())
 
 	// Public = no auth middleware, access_code authenticates
-	// Public checkout — add submit endpoints
+	// Public checkout, add submit endpoints
 	public := r.Group("/api/v1/public")
 	{
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
@@ -67,14 +68,18 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
 		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
 
-		// Public submit endpoints — called from checkout page
+		// Public submit endpoints, called from checkout page
 		public.POST("/charge/submit_pin", chargeHandler.PublicSubmitPIN)
 		public.POST("/charge/submit_otp", chargeHandler.PublicSubmitOTP)
 		public.POST("/charge/submit_birthday", chargeHandler.PublicSubmitBirthday)
-	}
 
-	// 3DS simulation, public, called from checkout page after fake 3DS form
-	r.POST("/api/v1/simulate/3ds/:reference", chargeHandler.Simulate3DS)
+		public.POST("/charge/submit_address", chargeHandler.PublicSubmitAddress)
+		public.POST("/charge/resend_otp", chargeHandler.PublicResendOTP)
+
+		// 3DS simulation, public, called from checkout page after fake 3DS form
+		//
+		public.POST("/simulate/3ds/:reference", chargeHandler.Simulate3DS)
+	}
 
 	v1 := r.Group("/api/v1")
 
@@ -100,6 +105,9 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		merchant.GET("", merchantHandler.GetProfile)
 		merchant.PUT("", merchantHandler.UpdateProfile)
 		merchant.PUT("/password", merchantHandler.ChangePassword)
+		merchant.GET("/webhook", webhookHandler.GetWebhookURL)
+		merchant.POST("/webhook", webhookHandler.UpdateWebhookURL)
+		merchant.POST("/webhook/test", webhookHandler.TestWebhook)
 	}
 
 	transaction := v1.Group("/transaction")
@@ -125,6 +133,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		charge.POST("/submit_otp", chargeHandler.SubmitOTP)
 		charge.POST("/submit_birthday", chargeHandler.SubmitBirthday)
 		charge.POST("/submit_address", chargeHandler.SubmitAddress)
+		charge.POST("/resend_otp", chargeHandler.ResendOTP)
 	}
 
 	customer := v1.Group("/customer")
@@ -150,6 +159,9 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		control.POST("/transactions/:ref/force", controlHandler.ForceTransaction)
 		control.GET("/logs", controlHandler.GetLogs)
 		control.DELETE("/logs", controlHandler.ClearLogs)
+		control.GET("/transactions", controlHandler.ListTransactions)
+		control.GET("/customers", controlHandler.ListCustomers)
+
 	}
 
 	return r

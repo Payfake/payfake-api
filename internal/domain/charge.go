@@ -88,5 +88,4 @@ const (
 	ChargeMomoTimeout        = "CHARGE_MOMO_TIMEOUT"
 	ChargeBankTransferFailed = "CHARGE_BANK_TRANSFER_FAILED"
 	ChargeFailed             = "CHARGE_FAILED"
-	ChargeInvalidPIN         = "CHARGE_INVALID_PIN"
 )

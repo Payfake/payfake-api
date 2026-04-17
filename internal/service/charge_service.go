@@ -275,7 +275,9 @@ func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, er
 	// Check scenario, the simulator may force a PIN failure here.
 	// CHARGE_INVALID_PIN specifically means the PIN step fails.
 	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
-	if result.Status == domain.TransactionFailed && result.ErrorCode == domain.ChargeInvalidPIN {
+	// ChargeInvalidPIN is a response code string, not a domain constant.
+	// We compare against the string directly.
+	if result.Status == domain.TransactionFailed && result.ErrorCode == "CHARGE_INVALID_PIN" {
 		return s.failCharge(charge, result.ErrorCode)
 	}
 
@@ -444,6 +446,49 @@ func (s *ChargeService) Simulate3DS(reference, merchantID string) (*ChargeFlowRe
 	}
 
 	return s.succeedCharge(charge, reference, merchantID)
+}
+
+// ResendOTPInput is the input for resending an OTP.
+type ResendOTPInput struct {
+	MerchantID string
+	Reference  string
+}
+
+// ResendOTP generates a fresh OTP and resets the flow back to send_otp.
+// Called when the customer requests a new OTP because the first one
+// expired or wasn't received. We generate a completely new OTP —
+// the old one is invalidated by overwriting it in the DB.
+func (s *ChargeService) ResendOTP(input ResendOTPInput) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	// Can only resend OTP if currently at the OTP step.
+	// If the flow has moved past OTP (or failed) resending makes no sense.
+	if charge.FlowStatus != domain.FlowSendOTP {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	newOTP, err := otp.GenerateOTP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate OTP: %w", err)
+	}
+
+	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, newOTP); err != nil {
+		return nil, fmt.Errorf("failed to update OTP: %w", err)
+	}
+
+	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSendOTP,
+		Reference:   input.Reference,
+		DisplayText: "A new OTP has been sent to your phone",
+		OTPCode:     newOTP,
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
 }
 
 // FetchCharge retrieves a charge by transaction reference.

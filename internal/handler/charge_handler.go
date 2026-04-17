@@ -450,7 +450,71 @@ func (h *ChargeHandler) FetchCharge(c *gin.Context) {
 		response.ChargeInitiated, charge)
 }
 
+type resendOTPRequest struct {
+	Reference string `json:"reference" binding:"required"`
+}
+
+// SubmitResendOTP handles POST /api/v1/charge/resend_otp
+func (h *ChargeHandler) ResendOTP(c *gin.Context) {
+	merchant, ok := middleware.GetMerchant(c)
+	if !ok {
+		response.UnauthorizedErr(c, "Unauthorized")
+		return
+	}
+
+	var req resendOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	out, err := h.chargeSvc.ResendOTP(service.ResendOTPInput{
+		MerchantID: merchant.ID,
+		Reference:  req.Reference,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
+	// OTP logged, never returned
+	_ = out.OTPCode
+
+	response.Success(c, http.StatusOK, "OTP resent successfully",
+		response.ChargeSendOTP, buildFlowResponse(out))
+}
+
 // Public charge handlers, authenticated via access_code, no secret key.
+
+// PublicResendOTP handles POST /api/v1/public/charge/resend_otp
+func (h *ChargeHandler) PublicResendOTP(c *gin.Context) {
+	var req resendOTPRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	merchant, err := h.chargeSvc.GetMerchantByReference(req.Reference)
+	if err != nil {
+		response.NotFoundErr(c, "Transaction not found")
+		return
+	}
+
+	out, err := h.chargeSvc.ResendOTP(service.ResendOTPInput{
+		MerchantID: merchant.ID,
+		Reference:  req.Reference,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
+	_ = out.OTPCode
+	response.Success(c, http.StatusOK, "OTP resent successfully",
+		response.ChargeSendOTP, buildFlowResponse(out))
+}
 
 func (h *ChargeHandler) PublicChargeCard(c *gin.Context) {
 	var req chargeCardRequest
@@ -668,6 +732,38 @@ func (h *ChargeHandler) PublicSubmitBirthday(c *gin.Context) {
 	}
 
 	_ = out.OTPCode
+	response.Success(c, http.StatusOK, flowMessage(out.Status),
+		flowResponseCode(out.Status), buildFlowResponse(out))
+}
+
+func (h *ChargeHandler) PublicSubmitAddress(c *gin.Context) {
+	var req submitAddressRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
+	merchant, err := h.chargeSvc.GetMerchantByReference(req.Reference)
+	if err != nil {
+		response.NotFoundErr(c, "Transaction not found")
+		return
+	}
+
+	out, err := h.chargeSvc.SubmitAddress(service.SubmitAddressInput{
+		MerchantID: merchant.ID,
+		Reference:  req.Reference,
+		Address:    req.Address,
+		City:       req.City,
+		State:      req.State,
+		ZipCode:    req.ZipCode,
+		Country:    req.Country,
+	})
+
+	if err != nil {
+		h.handleChargeError(c, err)
+		return
+	}
+
 	response.Success(c, http.StatusOK, flowMessage(out.Status),
 		flowResponseCode(out.Status), buildFlowResponse(out))
 }

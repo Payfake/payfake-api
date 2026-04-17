@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/GordenArcher/payfake/internal/domain"
 	"github.com/GordenArcher/payfake/internal/middleware"
 	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/GordenArcher/payfake/internal/service"
@@ -19,6 +20,7 @@ type ControlHandler struct {
 	txSvc       *service.TransactionService
 	logSvc      *service.LogService
 	authSvc     *service.AuthService
+	customerSvc *service.CustomerService
 }
 
 func NewControlHandler(
@@ -28,6 +30,7 @@ func NewControlHandler(
 	txSvc *service.TransactionService,
 	logSvc *service.LogService,
 	authSvc *service.AuthService,
+	customerSvc *service.CustomerService,
 ) *ControlHandler {
 	return &ControlHandler{
 		db:          db,
@@ -36,6 +39,7 @@ func NewControlHandler(
 		txSvc:       txSvc,
 		logSvc:      logSvc,
 		authSvc:     authSvc,
+		customerSvc: customerSvc,
 	}
 }
 
@@ -318,4 +322,81 @@ func (h *ControlHandler) ClearLogs(c *gin.Context) {
 
 	response.Success(c, http.StatusOK, "Logs cleared",
 		response.LogsCleared, nil)
+}
+
+// ListTransactions handles GET /api/v1/control/transactions
+// JWT-authenticated version of transaction list for the dashboard.
+// The regular /transaction endpoint requires secret key — this one
+// uses the dashboard JWT so the dashboard doesn't need to store the secret key.
+func (h *ControlHandler) ListTransactions(c *gin.Context) {
+	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
+	if !ok {
+		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
+	status := domain.TransactionStatus(c.Query("status"))
+
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 50
+	}
+
+	transactions, total, err := h.txSvc.List(merchantID, status, page, perPage)
+	if err != nil {
+		response.InternalErr(c, "Failed to fetch transactions")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Transactions fetched",
+		response.TransactionListFetched, gin.H{
+			"transactions": transactions,
+			"meta": gin.H{
+				"total":    total,
+				"page":     page,
+				"per_page": perPage,
+				"pages":    (total + int64(perPage) - 1) / int64(perPage),
+			},
+		})
+}
+
+// ListCustomers handles GET /api/v1/control/customers
+// JWT-authenticated customer list for the dashboard.
+func (h *ControlHandler) ListCustomers(c *gin.Context) {
+	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
+	if !ok {
+		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
+
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 50
+	}
+
+	customers, total, err := h.customerSvc.List(merchantID, page, perPage)
+	if err != nil {
+		response.InternalErr(c, "Failed to fetch customers")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Customers fetched",
+		response.CustomerListFetched, gin.H{
+			"customers": customers,
+			"meta": gin.H{
+				"total":    total,
+				"page":     page,
+				"per_page": perPage,
+				"pages":    (total + int64(perPage) - 1) / int64(perPage),
+			},
+		})
 }
