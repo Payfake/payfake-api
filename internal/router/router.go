@@ -59,13 +59,22 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	r.GET("/health", handler.HealthCheck())
 
 	// Public = no auth middleware, access_code authenticates
+	// Public checkout — add submit endpoints
 	public := r.Group("/api/v1/public")
 	{
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
 		public.POST("/charge/card", chargeHandler.PublicChargeCard)
 		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
 		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
+
+		// Public submit endpoints — called from checkout page
+		public.POST("/charge/submit_pin", chargeHandler.PublicSubmitPIN)
+		public.POST("/charge/submit_otp", chargeHandler.PublicSubmitOTP)
+		public.POST("/charge/submit_birthday", chargeHandler.PublicSubmitBirthday)
 	}
+
+	// 3DS simulation, public, called from checkout page after fake 3DS form
+	r.POST("/api/v1/simulate/3ds/:reference", chargeHandler.Simulate3DS)
 
 	v1 := r.Group("/api/v1")
 
@@ -110,6 +119,12 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		charge.POST("/mobile_money", chargeHandler.ChargeMobileMoney)
 		charge.POST("/bank", chargeHandler.ChargeBank)
 		charge.GET("/:reference", chargeHandler.FetchCharge)
+
+		// Multi-step flow submission endpoints
+		charge.POST("/submit_pin", chargeHandler.SubmitPIN)
+		charge.POST("/submit_otp", chargeHandler.SubmitOTP)
+		charge.POST("/submit_birthday", chargeHandler.SubmitBirthday)
+		charge.POST("/submit_address", chargeHandler.SubmitAddress)
 	}
 
 	customer := v1.Group("/customer")

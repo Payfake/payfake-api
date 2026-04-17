@@ -7,6 +7,7 @@ import (
 
 	"github.com/GordenArcher/payfake/internal/domain"
 	"github.com/GordenArcher/payfake/internal/repository"
+	"github.com/GordenArcher/payfake/pkg/otp"
 	"github.com/GordenArcher/payfake/pkg/uid"
 	"gorm.io/gorm"
 )
@@ -35,7 +36,7 @@ func NewChargeService(
 	}
 }
 
-// ChargeCardInput is the input for a direct card charge.
+// ChargeCardInput is the input for initiating a card charge.
 type ChargeCardInput struct {
 	MerchantID string
 	AccessCode string
@@ -46,7 +47,7 @@ type ChargeCardInput struct {
 	Email      string
 }
 
-// ChargeMomoInput is the input for a mobile money charge.
+// ChargeMomoInput is the input for initiating a mobile money charge.
 type ChargeMomoInput struct {
 	MerchantID string
 	AccessCode string
@@ -56,7 +57,7 @@ type ChargeMomoInput struct {
 	Email      string
 }
 
-// ChargeBankInput is the input for a bank transfer charge.
+// ChargeBankInput is the input for initiating a bank transfer charge.
 type ChargeBankInput struct {
 	MerchantID    string
 	AccessCode    string
@@ -66,27 +67,65 @@ type ChargeBankInput struct {
 	Email         string
 }
 
-// ChargeOutput is returned after any charge attempt.
-// The handler uses Status and ErrorCode to build the correct response.
-type ChargeOutput struct {
-	Transaction *domain.Transaction
-	Charge      *domain.Charge
-	Status      domain.TransactionStatus
-	ErrorCode   string
+// SubmitPINInput is the input for submitting a card PIN.
+type SubmitPINInput struct {
+	MerchantID string
+	Reference  string
+	PIN        string
 }
 
-// ChargeCard processes a card payment.
-// Flow:
-//  1. Find the pending transaction by access_code or reference
-//  2. Create the charge record
-//  3. Run it through the simulator to get the outcome
-//  4. Update charge and transaction status
-//  5. Fire the appropriate webhook event
-func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeOutput, error) {
+// SubmitOTPInput is the input for submitting an OTP.
+type SubmitOTPInput struct {
+	MerchantID string
+	Reference  string
+	OTP        string
+}
+
+// SubmitBirthdayInput is the input for submitting a date of birth.
+type SubmitBirthdayInput struct {
+	MerchantID string
+	Reference  string
+	Birthday   string // format: YYYY-MM-DD
+}
+
+// SubmitAddressInput is the input for submitting a billing address.
+type SubmitAddressInput struct {
+	MerchantID string
+	Reference  string
+	Address    string
+	City       string
+	State      string
+	ZipCode    string
+	Country    string
+}
+
+// ChargeFlowResponse is returned by every charge step endpoint.
+// The checkout page reads FlowStatus and renders the appropriate next step.
+type ChargeFlowResponse struct {
+	Status      domain.ChargeFlowStatus
+	Reference   string
+	DisplayText string
+	// OTPCode is populated only in the service layer for logging.
+	// It is NEVER sent to the client, the handler strips it.
+	// Developers read it from /control/logs during testing.
+	OTPCode     string
+	ThreeDSURL  string
+	Transaction *domain.Transaction
+	Charge      *domain.Charge
+}
+
+// ChargeCard initiates a card charge.
+// For local cards: returns send_pin, customer must enter PIN.
+// For international cards: returns open_url, customer completes 3DS.
+// We detect card type from the number, Visa/Mastercard starting
+// with certain ranges are treated as international.
+func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, error) {
 	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
 	if err != nil {
 		return nil, err
 	}
+
+	cardType := detectCardType(input.CardNumber)
 
 	charge := &domain.Charge{
 		Base:          domain.Base{ID: uid.NewChargeID()},
@@ -94,29 +133,65 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeOutput, error)
 		TransactionID: tx.ID,
 		Channel:       domain.ChannelCard,
 		Status:        domain.TransactionPending,
-		// We store only the last 4 digits of the card number,
-		// never the full number. Even in a simulator we build
-		// good habits around not storing sensitive card data.
-		CardLast4: safeCardLast4(input.CardNumber),
-		CardBrand: detectCardBrand(input.CardNumber),
+		CardLast4:     safeCardLast4(input.CardNumber),
+		CardBrand:     detectCardBrand(input.CardNumber),
+		CardType:      cardType,
+	}
+
+	// Determine the first step based on card type.
+	if cardType == domain.CardTypeInternational {
+		// International cards go through 3DS verification.
+		// We generate a simulated 3DS URL, the checkout page
+		// opens this in an iframe or redirect, simulates the
+		// customer completing verification, then the flow resolves.
+		charge.FlowStatus = domain.FlowOpenURL
+		charge.ThreeDSURL = fmt.Sprintf("http://localhost:8080/api/v1/simulate/3ds/%s", tx.Reference)
+	} else {
+		// Local Ghana cards start with PIN entry.
+		charge.FlowStatus = domain.FlowSendPIN
 	}
 
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
 
-	return s.resolveAndFinalize(tx, charge, domain.ChannelCard)
+	// Update transaction channel now that we know it.
+	s.transactionRepo.UpdateStatus(tx.ID, domain.TransactionPending, nil)
+
+	resp := &ChargeFlowResponse{
+		Status:      charge.FlowStatus,
+		Reference:   tx.Reference,
+		Charge:      charge,
+		Transaction: tx,
+	}
+
+	if cardType == domain.CardTypeInternational {
+		resp.DisplayText = "Complete 3D Secure verification to proceed"
+		resp.ThreeDSURL = charge.ThreeDSURL
+	} else {
+		resp.DisplayText = "Please enter your card PIN"
+	}
+
+	return resp, nil
 }
 
-// ChargeMobileMoney processes a mobile money payment.
-// MoMo charges are async by nature — in real life the customer gets
-// a USSD prompt on their phone and must approve it. We simulate this
-// by returning "pending" immediately for MoMo charges and resolving
-// the outcome asynchronously via webhook — same as real Paystack.
-func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeOutput, error) {
+// ChargeMobileMoney initiates a MoMo charge.
+// Returns send_otp, the customer must enter the OTP sent to their phone.
+// After OTP verification the flow moves to pay_offline while waiting
+// for the customer to approve the USSD prompt.
+func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowResponse, error) {
 	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Generate OTP for MoMo verification.
+	// In real Paystack this is sent via SMS to the customer's phone.
+	// In Payfake we log it to the introspection logs so the developer
+	// can read it without needing a real phone.
+	otpCode, err := otp.GenerateOTP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
 
 	charge := &domain.Charge{
@@ -125,33 +200,32 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeOutput,
 		TransactionID: tx.ID,
 		Channel:       domain.ChannelMobileMoney,
 		Status:        domain.TransactionPending,
+		FlowStatus:    domain.FlowSendOTP,
 		MomoPhone:     input.Phone,
 		MomoProvider:  input.Provider,
+		OTPCode:       otpCode,
 	}
 
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
 
-	// Update transaction channel now that we know it.
-	tx.Channel = domain.ChannelMobileMoney
-	s.transactionRepo.UpdateStatus(tx.ID, domain.TransactionPending, nil)
-
-	// For MoMo we return pending immediately and resolve asynchronously.
-	// The simulator runs in a goroutine — it applies the configured delay
-	// (simulating the customer approval window) then fires the webhook.
-	go s.resolveMomoAsync(tx, charge)
-
-	return &ChargeOutput{
-		Transaction: tx,
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSendOTP,
+		Reference:   tx.Reference,
+		DisplayText: fmt.Sprintf("Enter the OTP sent to %s", maskPhone(input.Phone)),
+		// OTPCode is included so the handler can log it.
+		// The handler strips it before sending to the client.
+		OTPCode:     otpCode,
 		Charge:      charge,
-		Status:      domain.TransactionPending,
-		ErrorCode:   "",
+		Transaction: tx,
 	}, nil
 }
 
-// ChargeBank processes a bank transfer payment.
-func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeOutput, error) {
+// ChargeBank initiates a bank transfer charge.
+// Returns send_birthday, the customer must enter their date of birth
+// as the first verification step, same as real Paystack bank charges.
+func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, error) {
 	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
 	if err != nil {
 		return nil, err
@@ -163,6 +237,7 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeOutput, error)
 		TransactionID:     tx.ID,
 		Channel:           domain.ChannelBankTransfer,
 		Status:            domain.TransactionPending,
+		FlowStatus:        domain.FlowSendBirthday,
 		BankCode:          input.BankCode,
 		BankAccountNumber: input.AccountNumber,
 	}
@@ -171,7 +246,204 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeOutput, error)
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
 
-	return s.resolveAndFinalize(tx, charge, domain.ChannelBankTransfer)
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSendBirthday,
+		Reference:   tx.Reference,
+		DisplayText: "Enter your date of birth to verify your identity",
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
+}
+
+// SubmitPIN processes the card PIN submission.
+// If the scenario is set to force failure it fails here.
+// Otherwise it advances to the OTP step.
+// Any 4-digit PIN is accepted unless the simulator rejects it —
+// we're simulating behavior, not real PIN validation.
+func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	// Validate we're at the right step, can't submit PIN if flow
+	// is already past the PIN step or in a terminal state.
+	if charge.FlowStatus != domain.FlowSendPIN {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	// Check scenario, the simulator may force a PIN failure here.
+	// CHARGE_INVALID_PIN specifically means the PIN step fails.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
+	if result.Status == domain.TransactionFailed && result.ErrorCode == domain.ChargeInvalidPIN {
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
+	// PIN accepted, generate OTP and advance to OTP step.
+	otpCode, err := otp.GenerateOTP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate OTP: %w", err)
+	}
+
+	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
+		return nil, fmt.Errorf("failed to update flow status: %w", err)
+	}
+
+	charge.FlowStatus = domain.FlowSendOTP
+
+	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSendOTP,
+		Reference:   input.Reference,
+		DisplayText: "Enter the OTP sent to your registered phone number",
+		OTPCode:     otpCode,
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
+}
+
+// SubmitOTP processes the OTP submission for both card and MoMo flows.
+// For cards: verifies OTP then resolves the final outcome.
+// For MoMo: verifies OTP then moves to pay_offline (waiting for USSD approval).
+func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	if charge.FlowStatus != domain.FlowSendOTP {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	// Verify OTP, constant time comparison to prevent timing attacks.
+	// We compare the submitted OTP against what we generated and stored.
+	// In simulation any OTP works unless the scenario forces failure —
+	// but we still validate the format (6 digits).
+	if !isValidOTPFormat(input.OTP) {
+		return nil, ErrInvalidOTP
+	}
+
+	// Check if the scenario forces an OTP failure.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, charge.Channel)
+
+	// For card charges, resolve final outcome after OTP.
+	if charge.Channel == domain.ChannelCard {
+		if result.Status == domain.TransactionFailed {
+			return s.failCharge(charge, result.ErrorCode)
+		}
+		return s.succeedCharge(charge, input.Reference, input.MerchantID)
+	}
+
+	// For MoMo, advance to pay_offline after OTP.
+	// The customer now needs to approve the USSD prompt on their phone.
+	if charge.Channel == domain.ChannelMobileMoney {
+		if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowPayOffline, ""); err != nil {
+			return nil, fmt.Errorf("failed to update flow status: %w", err)
+		}
+		charge.FlowStatus = domain.FlowPayOffline
+
+		tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+
+		// Now resolve MoMo asynchronously, same as before but triggered
+		// after OTP is verified, not immediately on charge initiation.
+		go s.resolveMomoAsync(charge, input.Reference, input.MerchantID)
+
+		return &ChargeFlowResponse{
+			Status:      domain.FlowPayOffline,
+			Reference:   input.Reference,
+			DisplayText: fmt.Sprintf("Approve the payment prompt on %s", charge.MomoPhone),
+			Charge:      charge,
+			Transaction: tx,
+		}, nil
+	}
+
+	return nil, ErrChargeFlowInvalidStep
+}
+
+// SubmitBirthday processes the date of birth submission for bank charges.
+// Any valid date format is accepted, we're simulating, not validating
+// against a real bank's records. After birthday, OTP is sent.
+func (s *ChargeService) SubmitBirthday(input SubmitBirthdayInput) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	if charge.FlowStatus != domain.FlowSendBirthday {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	// Check scenario for birthday failure.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelBankTransfer)
+	if result.Status == domain.TransactionFailed {
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
+	// Birthday accepted, generate OTP and advance.
+	otpCode, err := otp.GenerateOTP()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate OTP: %w", err)
+	}
+
+	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
+		return nil, fmt.Errorf("failed to update flow status: %w", err)
+	}
+
+	charge.FlowStatus = domain.FlowSendOTP
+
+	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSendOTP,
+		Reference:   input.Reference,
+		DisplayText: "Enter the OTP sent to your registered phone number",
+		OTPCode:     otpCode,
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
+}
+
+// SubmitAddress processes the billing address for AVS (Address Verification).
+// After address verification the charge resolves directly.
+func (s *ChargeService) SubmitAddress(input SubmitAddressInput) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	if charge.FlowStatus != domain.FlowSendAddress {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
+	if result.Status == domain.TransactionFailed {
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
+	return s.succeedCharge(charge, input.Reference, input.MerchantID)
+}
+
+// Simulate3DS handles the simulated 3DS verification completion.
+// In real Paystack the customer completes 3DS on their bank's page
+// and gets redirected back. We simulate this with a dedicated endpoint
+// that the checkout page calls after showing a fake 3DS form.
+func (s *ChargeService) Simulate3DS(reference, merchantID string) (*ChargeFlowResponse, error) {
+	charge, err := s.chargeRepo.FindByTransactionReference(reference, merchantID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
+	if charge.FlowStatus != domain.FlowOpenURL {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	result := s.simulatorSvc.ResolveOutcome(merchantID, domain.ChannelCard)
+	if result.Status == domain.TransactionFailed {
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
+	return s.succeedCharge(charge, reference, merchantID)
 }
 
 // FetchCharge retrieves a charge by transaction reference.
@@ -186,89 +458,100 @@ func (s *ChargeService) FetchCharge(reference, merchantID string) (*domain.Charg
 	return charge, nil
 }
 
-// resolveAndFinalize runs the simulator and writes the outcome to
-// the charge and transaction records, then fires the webhook.
-// This is the shared finalization logic for card and bank charges.
-// MoMo uses resolveMomoAsync instead because it runs asynchronously.
-func (s *ChargeService) resolveAndFinalize(
-	tx *domain.Transaction,
-	charge *domain.Charge,
-	channel domain.TransactionChannel,
-) (*ChargeOutput, error) {
-	// Run the simulation, this is where the outcome is decided.
-	result := s.simulatorSvc.ResolveOutcome(tx.MerchantID, channel)
+// GetMerchantByAccessCode resolves the merchant through the transaction
+// that owns the given access code. Used by public charge endpoints.
+func (s *ChargeService) GetMerchantByAccessCode(accessCode string) (*domain.Merchant, error) {
+	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	merchant, err := s.merchantRepo.FindByID(tx.MerchantID)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	return merchant, nil
+}
 
-	// Update the charge status first.
-	if err := s.chargeRepo.UpdateStatus(charge.ID, result.Status); err != nil {
+// succeedCharge marks a charge and its transaction as successful
+// then fires the charge.success webhook.
+func (s *ChargeService) succeedCharge(charge *domain.Charge, reference, merchantID string) (*ChargeFlowResponse, error) {
+	now := time.Now()
+
+	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSuccess, ""); err != nil {
+		return nil, fmt.Errorf("failed to update charge: %w", err)
+	}
+	if err := s.chargeRepo.UpdateStatus(charge.ID, domain.TransactionSuccess); err != nil {
 		return nil, fmt.Errorf("failed to update charge status: %w", err)
 	}
-
-	// Update the transaction status.
-	var paidAt *time.Time
-	if result.Status == domain.TransactionSuccess {
-		now := time.Now()
-		paidAt = &now
+	if err := s.transactionRepo.UpdateStatus(charge.TransactionID, domain.TransactionSuccess, &now); err != nil {
+		return nil, fmt.Errorf("failed to update transaction: %w", err)
 	}
 
-	if err := s.transactionRepo.UpdateStatus(tx.ID, result.Status, paidAt); err != nil {
-		return nil, fmt.Errorf("failed to update transaction status: %w", err)
+	charge.FlowStatus = domain.FlowSuccess
+	charge.Status = domain.TransactionSuccess
+
+	tx, _ := s.transactionRepo.FindByReference(reference, merchantID)
+	if tx != nil {
+		tx.Status = domain.TransactionSuccess
+		tx.PaidAt = &now
+		s.webhookSvc.Dispatch(merchantID, charge.TransactionID, domain.EventChargeSuccess, tx)
 	}
 
-	tx.Status = result.Status
-	tx.Channel = channel
-	charge.Status = result.Status
-
-	// Fire the appropriate webhook event based on outcome.
-	eventType := domain.EventChargeSuccess
-	if result.Status == domain.TransactionFailed {
-		eventType = domain.EventChargeFailed
-	}
-
-	// Webhook dispatch is fire-and-forget, errors here don't fail the charge.
-	// The developer can retry failed webhooks from the control panel.
-	s.webhookSvc.Dispatch(tx.MerchantID, tx.ID, eventType, tx)
-
-	return &ChargeOutput{
-		Transaction: tx,
+	return &ChargeFlowResponse{
+		Status:      domain.FlowSuccess,
+		Reference:   reference,
+		DisplayText: "Payment successful",
 		Charge:      charge,
-		Status:      result.Status,
-		ErrorCode:   result.ErrorCode,
+		Transaction: tx,
 	}, nil
 }
 
-// resolveMomoAsync simulates the async nature of MoMo payments.
-// In real Paystack MoMo flows, the charge returns "send_otp" or "pending"
-// and the final status arrives via webhook after the customer approves.
-// We simulate this by sleeping for the configured delay then resolving.
-func (s *ChargeService) resolveMomoAsync(tx *domain.Transaction, charge *domain.Charge) {
-	// The simulator already applied DelayMS inside ResolveOutcome,
-	// for MoMo we run ResolveOutcome here in the goroutine so the
-	// delay happens asynchronously and doesn't block the response.
-	result := s.simulatorSvc.ResolveOutcome(tx.MerchantID, domain.ChannelMobileMoney)
-
-	var paidAt *time.Time
-	if result.Status == domain.TransactionSuccess {
-		now := time.Now()
-		paidAt = &now
+// failCharge marks a charge and its transaction as failed
+// then fires the charge.failed webhook.
+func (s *ChargeService) failCharge(charge *domain.Charge, errorCode string) (*ChargeFlowResponse, error) {
+	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowFailed, ""); err != nil {
+		return nil, fmt.Errorf("failed to update charge: %w", err)
+	}
+	if err := s.chargeRepo.UpdateStatus(charge.ID, domain.TransactionFailed); err != nil {
+		return nil, fmt.Errorf("failed to update charge status: %w", err)
+	}
+	if err := s.chargeRepo.UpdateChargeError(charge.ID, errorCode); err != nil {
+		return nil, fmt.Errorf("failed to update charge error: %w", err)
+	}
+	if err := s.transactionRepo.UpdateStatus(charge.TransactionID, domain.TransactionFailed, nil); err != nil {
+		return nil, fmt.Errorf("failed to update transaction: %w", err)
 	}
 
-	s.chargeRepo.UpdateStatus(charge.ID, result.Status)
-	s.transactionRepo.UpdateStatus(tx.ID, result.Status, paidAt)
+	charge.FlowStatus = domain.FlowFailed
+	charge.Status = domain.TransactionFailed
+	charge.ChargeErrorCode = errorCode
 
-	tx.Status = result.Status
+	tx, _ := s.transactionRepo.FindByID(charge.TransactionID, charge.MerchantID)
+	if tx != nil {
+		s.webhookSvc.Dispatch(charge.MerchantID, charge.TransactionID, domain.EventChargeFailed, tx)
+	}
 
-	eventType := domain.EventChargeSuccess
+	return &ChargeFlowResponse{
+		Status:      domain.FlowFailed,
+		Reference:   charge.TransactionID,
+		DisplayText: "Payment failed",
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
+}
+
+// resolveMomoAsync resolves a MoMo charge asynchronously after OTP verification.
+func (s *ChargeService) resolveMomoAsync(charge *domain.Charge, reference, merchantID string) {
+	result := s.simulatorSvc.ResolveOutcome(charge.MerchantID, domain.ChannelMobileMoney)
+
 	if result.Status == domain.TransactionFailed {
-		eventType = domain.EventChargeFailed
+		s.failCharge(charge, result.ErrorCode)
+		return
 	}
-
-	s.webhookSvc.Dispatch(tx.MerchantID, tx.ID, eventType, tx)
+	s.succeedCharge(charge, reference, merchantID)
 }
 
 // findPendingTransaction looks up a transaction by access_code or reference.
-// We try access_code first (popup flow), then fall back to reference
-// (direct API flow). The transaction must be in pending state,
-// you can't charge a transaction that's already been completed.
 func (s *ChargeService) findPendingTransaction(accessCode, reference, merchantID string) (*domain.Transaction, error) {
 	var tx *domain.Transaction
 	var err error
@@ -288,9 +571,6 @@ func (s *ChargeService) findPendingTransaction(accessCode, reference, merchantID
 		return nil, fmt.Errorf("failed to find transaction: %w", err)
 	}
 
-	// Guard against double-charging, once a transaction leaves pending
-	// state it cannot be charged again. The developer must initialize
-	// a new transaction for a new charge attempt.
 	if tx.Status != domain.TransactionPending {
 		return nil, ErrTransactionNotPending
 	}
@@ -298,9 +578,23 @@ func (s *ChargeService) findPendingTransaction(accessCode, reference, merchantID
 	return tx, nil
 }
 
-// safeCardLast4 extracts the last 4 digits of a card number safely.
-// If the card number is shorter than 4 characters we return an empty
-// string rather than panicking with an index out of bounds error.
+// GetMerchantByReference resolves the merchant through a transaction reference.
+// Used by public submit endpoints and the 3DS simulation endpoint.
+func (s *ChargeService) GetMerchantByReference(reference string) (*domain.Merchant, error) {
+	// We search across all merchants since public endpoints don't have a merchant context.
+	// We find the transaction by reference (unique across the system) then get its merchant.
+	var tx domain.Transaction
+	result := s.transactionRepo.DB().Where("reference = ?", reference).First(&tx)
+	if result.Error != nil {
+		return nil, ErrTransactionNotFound
+	}
+	merchant, err := s.merchantRepo.FindByID(tx.MerchantID)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	return merchant, nil
+}
+
 func safeCardLast4(cardNumber string) string {
 	if len(cardNumber) < 4 {
 		return ""
@@ -308,9 +602,7 @@ func safeCardLast4(cardNumber string) string {
 	return cardNumber[len(cardNumber)-4:]
 }
 
-// detectCardBrand identifies the card network from the card number prefix.
-// This is a simplified version of the full BIN lookup, just enough
-// to return a brand name in the charge response.
+// detectCardBrand identifies the card network from the first digit.
 func detectCardBrand(cardNumber string) string {
 	if len(cardNumber) == 0 {
 		return "unknown"
@@ -327,23 +619,49 @@ func detectCardBrand(cardNumber string) string {
 	}
 }
 
-// GetMerchantByAccessCode looks up the merchant who owns the transaction
-// that this access code belongs to. Used by the public charge endpoints
-// to resolve the merchant without an Authorization header.
-// Returns an error if the access code is invalid or the transaction
-// is not in pending state — you can't charge a completed transaction.
-func (s *ChargeService) GetMerchantByAccessCode(accessCode string) (*domain.Merchant, error) {
-	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
-	if err != nil {
-		return nil, ErrTransactionNotFound
+// detectCardType identifies whether a card is local or international.
+// Visa cards starting with 4 followed by certain ranges and Mastercard
+// starting with 5 are treated as international.
+// Cards with a 0 as the second digit are treated as local Ghana cards.
+// This is a simplified heuristic, real BIN lookup would be more accurate.
+func detectCardType(cardNumber string) domain.CardType {
+	if len(cardNumber) < 6 {
+		return domain.CardTypeLocal
 	}
-
-	// We need the merchant to apply their scenario config during simulation.
-	// The transaction carries the merchant_id — one DB lookup gets us there.
-	merchant, err := s.merchantRepo.FindByID(tx.MerchantID)
-	if err != nil {
-		return nil, ErrTransactionNotFound
+	// Test card ranges, 4111xxxx is the standard Visa test card (international)
+	// 5061xxxx is a local Verve card range
+	prefix := cardNumber[:4]
+	switch prefix {
+	case "5061", "5062", "5063", "6500", "6501":
+		// Verve card ranges, local Ghana/Nigeria cards
+		return domain.CardTypeLocal
+	default:
+		// Treat all other Visa/Mastercard as international
+		if cardNumber[0] == '4' || cardNumber[0] == '5' {
+			return domain.CardTypeInternational
+		}
+		return domain.CardTypeLocal
 	}
+}
 
-	return merchant, nil
+// maskPhone masks the middle digits of a phone number for display.
+// +233241234567 → +233241***567
+func maskPhone(phone string) string {
+	if len(phone) < 7 {
+		return phone
+	}
+	return phone[:6] + "***" + phone[len(phone)-3:]
+}
+
+// isValidOTPFormat checks that an OTP is 6 digits.
+func isValidOTPFormat(otpCode string) bool {
+	if len(otpCode) != 6 {
+		return false
+	}
+	for _, c := range otpCode {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

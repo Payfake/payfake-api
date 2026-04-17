@@ -44,4 +44,8 @@ var (
 	// Control errors
 	ErrLogsEmpty          = errors.New("no logs found")
 	ErrInvalidForceStatus = errors.New("invalid force status")
+
+	ErrInvalidOTP            = errors.New("invalid OTP")
+	ErrChargeFlowInvalidStep = errors.New("invalid step in charge flow")
+	ErrChargeFlowExpired     = errors.New("charge flow has expired")
 )

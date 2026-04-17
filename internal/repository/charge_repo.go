@@ -59,3 +59,39 @@ func (r *ChargeRepository) UpdateStatus(id string, status domain.TransactionStat
 		Where("id = ?", id).
 		Update("status", status).Error
 }
+
+// UpdateFlowStatus updates the flow status and optionally the OTP code.
+// Called after each step in the charge flow, when a PIN is submitted,
+// when an OTP is generated, when a birthday is verified etc.
+func (r *ChargeRepository) UpdateFlowStatus(id string, flowStatus domain.ChargeFlowStatus, otpCode string) error {
+	updates := map[string]any{
+		"flow_status": flowStatus,
+	}
+	if otpCode != "" {
+		updates["otp_code"] = otpCode
+	}
+	return r.db.Model(&domain.Charge{}).
+		Where("id = ?", id).
+		Updates(updates).Error
+}
+
+// FindByTransactionReference finds a charge by its parent transaction reference.
+// Used by submit endpoints which receive the transaction reference from the
+// checkout page, not the internal charge ID.
+func (r *ChargeRepository) FindByTransactionReference(reference, merchantID string) (*domain.Charge, error) {
+	var charge domain.Charge
+	result := r.db.Joins("JOIN transactions ON transactions.id = charges.transaction_id").
+		Where("transactions.reference = ? AND charges.merchant_id = ?", reference, merchantID).
+		First(&charge)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &charge, nil
+}
+
+// UpdateChargeError stores the error code on a failed charge.
+func (r *ChargeRepository) UpdateChargeError(id, errorCode string) error {
+	return r.db.Model(&domain.Charge{}).
+		Where("id = ?", id).
+		Update("charge_error_code", errorCode).Error
+}

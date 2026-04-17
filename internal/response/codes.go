@@ -196,4 +196,19 @@ const (
 
 	// Auth — token refresh
 	AuthRefreshSuccess Code = "AUTH_REFRESH_SUCCESS"
+
+	// Charge flow intermediate states
+	ChargeSendPIN      Code = "CHARGE_SEND_PIN"
+	ChargeSendOTP      Code = "CHARGE_SEND_OTP"
+	ChargeSendBirthday Code = "CHARGE_SEND_BIRTHDAY"
+	ChargeSendAddress  Code = "CHARGE_SEND_ADDRESS"
+	ChargeOpenURL      Code = "CHARGE_OPEN_URL"
+	ChargePayOffline   Code = "CHARGE_PAY_OFFLINE"
+
+	// Charge flow errors
+	ChargeInvalidOTP       Code = "CHARGE_INVALID_OTP"
+	ChargeInvalidPINSubmit Code = "CHARGE_INVALID_PIN_SUBMITTED"
+	ChargeInvalidBirthday  Code = "CHARGE_INVALID_BIRTHDAY"
+	ChargeFlowExpired      Code = "CHARGE_FLOW_EXPIRED"
+	ChargeFlowInvalidStep  Code = "CHARGE_FLOW_INVALID_STEP"
 )

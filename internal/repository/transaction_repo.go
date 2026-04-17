@@ -9,6 +9,13 @@ type TransactionRepository struct {
 	db *gorm.DB
 }
 
+// DB returns the underlying gorm.DB instance.
+// Used sparingly, only when a raw query is needed outside
+// the repository's standard method set.
+func (r *TransactionRepository) DB() *gorm.DB {
+	return r.db
+}
+
 func NewTransactionRepository(db *gorm.DB) *TransactionRepository {
 	return &TransactionRepository{db: db}
 }
