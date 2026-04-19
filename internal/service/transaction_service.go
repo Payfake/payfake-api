@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/GordenArcher/payfake/internal/domain"
@@ -308,4 +310,80 @@ func (s *TransactionService) GetByReference(reference string) (*domain.Transacti
 		return nil, ErrTransactionNotFound
 	}
 	return &tx, nil
+}
+
+// StartExpiryWorker launches a background goroutine that periodically
+// marks stale pending transactions as abandoned.
+// Real Paystack expires pending transactions after 1 hour, we match
+// that behavior so developers test timeout handling in their apps.
+// Call once from main.go after the server starts.
+func (s *TransactionService) StartExpiryWorker(ctx context.Context) {
+	go func() {
+		// Run immediately on startup to catch any transactions that
+		// expired while the server was down, then tick every 5 minutes.
+		// 5 minutes is frequent enough to be realistic without hammering the DB.
+		s.expireStaleTransactions()
+
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		log.Println("[payfake] transaction expiry worker started")
+
+		for {
+			select {
+			case <-ticker.C:
+				s.expireStaleTransactions()
+			case <-ctx.Done():
+				log.Println("[payfake] transaction expiry worker stopped")
+				return
+			}
+		}
+	}()
+}
+
+// expireStaleTransactions finds all pending transactions older than 1 hour
+// and marks them as abandoned. We also update any associated charge records
+// so the charge flow_status reflects the abandonment.
+func (s *TransactionService) expireStaleTransactions() {
+	cutoff := time.Now().Add(-1 * time.Hour)
+
+	// Find all pending transactions older than the cutoff.
+	var stale []domain.Transaction
+	result := s.transactionRepo.DB().
+		Where("status = ? AND created_at < ?", domain.TransactionPending, cutoff).
+		Find(&stale)
+
+	if result.Error != nil {
+		log.Printf("[payfake] expiry worker: failed to fetch stale transactions: %v", result.Error)
+		return
+	}
+
+	if len(stale) == 0 {
+		return
+	}
+
+	log.Printf("[payfake] expiry worker: expiring %d stale transaction(s)", len(stale))
+
+	for _, tx := range stale {
+		// Update transaction status to abandoned.
+		if err := s.transactionRepo.UpdateStatus(tx.ID, domain.TransactionAbandoned, nil); err != nil {
+			log.Printf("[payfake] expiry worker: failed to abandon transaction %s: %v", tx.ID, err)
+			continue
+		}
+
+		// Also update the associated charge flow status if one exists.
+		// This keeps the charge and transaction states consistent
+		// a charge stuck at send_pin or pay_offline for over an hour
+		// should also be marked as failed/abandoned.
+		s.transactionRepo.DB().
+			Model(&domain.Charge{}).
+			Where("transaction_id = ? AND status = ?", tx.ID, domain.TransactionPending).
+			Updates(map[string]any{
+				"status":      domain.TransactionFailed,
+				"flow_status": domain.FlowFailed,
+			})
+
+		log.Printf("[payfake] expiry worker: abandoned transaction %s (created %s)",
+			tx.ID, tx.CreatedAt.Format(time.RFC3339))
+	}
 }

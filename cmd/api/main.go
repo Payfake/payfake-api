@@ -49,9 +49,15 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start webhook retry worker before the server.
+	/// Start background workers before the server.
 	workerCtx, _ := context.WithCancel(context.Background())
+
+	// Webhook retry, re-delivers failed webhooks every 60 seconds.
 	result.WebhookSvc.StartRetryWorker(workerCtx)
+
+	// Transaction expiry, marks stale pending transactions as abandoned
+	// after 1 hour, matching real Paystack behavior.
+	result.TxSvc.StartExpiryWorker(workerCtx)
 
 	// Start the server in a goroutine so the main goroutine can listen
 	// for OS signals without being blocked by ListenAndServe.

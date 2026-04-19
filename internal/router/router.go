@@ -15,6 +15,7 @@ import (
 type RouterResult struct {
 	Engine     *gin.Engine
 	WebhookSvc *service.WebhookService
+	TxSvc      *service.TransactionService
 }
 
 func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) RouterResult {
@@ -178,5 +179,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	return RouterResult{
 		Engine:     r,
 		WebhookSvc: webhookSvc,
+		TxSvc:      txSvc,
 	}
 }
