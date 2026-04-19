@@ -1,6 +1,7 @@
 package router
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/GordenArcher/payfake/internal/handler"
@@ -11,9 +12,23 @@ import (
 	"gorm.io/gorm"
 )
 
-func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) *gin.Engine {
+type RouterResult struct {
+	Engine     *gin.Engine
+	WebhookSvc *service.WebhookService
+}
+
+func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) RouterResult {
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	// Limit request body to 2MB, prevents memory exhaustion from
+	// malicious clients sending huge payloads. 2MB is generous for
+	// a payment API where the largest body is a charge request with
+	// card details, those are never more than a few hundred bytes.
+	r.Use(func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20) // 2MB
+		c.Next()
+	})
 
 	// Single CORS middleware on root engine, runs before everything.
 	// Handles OPTIONS preflight for every route in one place.
@@ -34,6 +49,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	scenarioRepo := repository.NewScenarioRepository(db)
 	logRepo := repository.NewLogRepository(db)
 	statsRepo := repository.NewStatsRepository(db)
+	otpRepo := repository.NewOTPRepository(db)
 
 	// Services
 	authSvc := service.NewAuthService(merchantRepo, jwtSecret, accessExpiry, refreshExpiry)
@@ -42,7 +58,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	simulatorSvc := service.NewSimulatorService(scenarioRepo)
 	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo)
 	txSvc := service.NewTransactionService(transactionRepo, customerSvc, merchantRepo)
-	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, simulatorSvc, webhookSvc)
+	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, otpRepo, simulatorSvc, webhookSvc, frontendURL)
 	scenarioSvc := service.NewScenarioService(scenarioRepo)
 	logSvc := service.NewLogService(logRepo)
 	statsSvc := service.NewStatsService(statsRepo)
@@ -50,10 +66,10 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	// Handlers
 	authHandler := handler.NewAuthHandler(db, authSvc, isProd)
 	merchantHandler := handler.NewMerchantHandler(db, merchantSvc, authSvc)
-	transactionHandler := handler.NewTransactionHandler(db, txSvc)
+	transactionHandler := handler.NewTransactionHandler(db, txSvc, chargeSvc)
+	controlHandler := handler.NewControlHandler(db, scenarioSvc, webhookSvc, txSvc, logSvc, authSvc, customerSvc, otpRepo)
 	chargeHandler := handler.NewChargeHandler(db, chargeSvc)
 	customerHandler := handler.NewCustomerHandler(db, customerSvc, txSvc)
-	controlHandler := handler.NewControlHandler(db, scenarioSvc, webhookSvc, txSvc, logSvc, authSvc, customerSvc)
 	statsHandler := handler.NewStatsHandler(db, statsSvc, authSvc)
 	webhookHandler := handler.NewWebhookHandler(db, merchantSvc, authSvc)
 
@@ -162,8 +178,11 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		control.DELETE("/logs", controlHandler.ClearLogs)
 		control.GET("/transactions", controlHandler.ListTransactions)
 		control.GET("/customers", controlHandler.ListCustomers)
-
+		control.GET("/otp-logs", controlHandler.GetOTPLogs)
 	}
 
-	return r
+	return RouterResult{
+		Engine:     r,
+		WebhookSvc: webhookSvc,
+	}
 }

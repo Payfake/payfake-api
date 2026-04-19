@@ -14,12 +14,13 @@ import (
 )
 
 type TransactionHandler struct {
-	db    *gorm.DB
-	txSvc *service.TransactionService
+	db        *gorm.DB
+	txSvc     *service.TransactionService
+	chargeSvc *service.ChargeService
 }
 
-func NewTransactionHandler(db *gorm.DB, txSvc *service.TransactionService) *TransactionHandler {
-	return &TransactionHandler{db: db, txSvc: txSvc}
+func NewTransactionHandler(db *gorm.DB, txSvc *service.TransactionService, chargeSvc *service.ChargeService) *TransactionHandler {
+	return &TransactionHandler{db: db, txSvc: txSvc, chargeSvc: chargeSvc}
 }
 
 type initializeRequest struct {
@@ -262,12 +263,32 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 
 	tx, err := h.txSvc.GetByAccessCode(accessCode)
 	if err != nil {
-		// Only a genuine not-found (wrong access code) gets this message.
 		response.NotFoundErr(c, "Invalid payment link")
 		return
 	}
 
-	// Build the base data payload, same fields regardless of status.
+	merchant, err := h.txSvc.GetMerchantForTransaction(tx.MerchantID)
+	if err != nil {
+		response.InternalErr(c, "Failed to load transaction details")
+		return
+	}
+
+	// Fetch the current charge for this transaction so the checkout
+	// page knows the current flow_status — critical for MoMo polling.
+	// charge may be nil if no charge attempt has been made yet.
+	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
+
+	var chargeData gin.H
+	if charge != nil {
+		chargeData = gin.H{
+			"id":          charge.ID,
+			"channel":     charge.Channel,
+			"flow_status": charge.FlowStatus,
+			"status":      charge.Status,
+			"error_code":  charge.ChargeErrorCode,
+		}
+	}
+
 	data := gin.H{
 		"amount":       tx.Amount,
 		"currency":     tx.Currency,
@@ -275,9 +296,10 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 		"reference":    tx.Reference,
 		"callback_url": tx.CallbackURL,
 		"access_code":  tx.AccessCode,
+		"charge":       chargeData,
 		"merchant": gin.H{
-			"business_name": tx.Merchant.BusinessName,
-			"public_key":    tx.Merchant.PublicKey,
+			"business_name": merchant.BusinessName,
+			"public_key":    merchant.PublicKey,
 		},
 		"customer": gin.H{
 			"email":      tx.Customer.Email,
@@ -291,7 +313,7 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 	// payment form, success screen, failure screen, or already-paid screen.
 	switch tx.Status {
 	case domain.TransactionSuccess:
-		// Payment already completed — don't show the payment form again.
+		// Payment already completed, don't show the payment form again.
 		// Return 200 so the checkout app can render a "already paid" screen
 		// instead of an error page. The data is still included so the app
 		// can show the amount and merchant name in the confirmation.

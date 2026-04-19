@@ -50,6 +50,7 @@ func migrate(db *gorm.DB) error {
 		&domain.WebhookAttempt{},
 		&domain.ScenarioConfig{},
 		&domain.RequestLog{},
+		&domain.OTPLog{},
 	)
 
 	if err != nil {

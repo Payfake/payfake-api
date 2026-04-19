@@ -2,8 +2,10 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -162,4 +164,56 @@ func (s *WebhookService) GetAttempts(id, merchantID string) ([]domain.WebhookAtt
 		return nil, ErrWebhookNotFound
 	}
 	return s.webhookRepo.GetAttempts(id)
+}
+
+// StartRetryWorker launches a background goroutine that periodically
+// retries undelivered webhook events. It runs every 60 seconds and
+// picks up any events that failed delivery and have fewer than 3 attempts.
+// This prevents webhooks from being silently lost when the merchant's
+// endpoint is temporarily down.
+// Call this once from main.go after the server starts.
+func (s *WebhookService) StartRetryWorker(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+
+		log.Println("[payfake] webhook retry worker started")
+
+		for {
+			select {
+			case <-ticker.C:
+				s.retryUndelivered()
+			case <-ctx.Done():
+				// Context cancelled, server is shutting down.
+				// Stop the worker cleanly so we don't retry during shutdown.
+				log.Println("[payfake] webhook retry worker stopped")
+				return
+			}
+		}
+	}()
+}
+
+// retryUndelivered finds all undelivered webhook events with fewer
+// than 3 attempts and re-triggers delivery for each one.
+func (s *WebhookService) retryUndelivered() {
+	events, err := s.webhookRepo.FindUndeliveredEvents()
+	if err != nil {
+		log.Printf("[payfake] retry worker: failed to fetch undelivered events: %v", err)
+		return
+	}
+
+	if len(events) == 0 {
+		return
+	}
+
+	log.Printf("[payfake] retry worker: retrying %d undelivered webhook(s)", len(events))
+
+	for _, event := range events {
+		payloadBytes, err := json.Marshal(event.Payload)
+		if err != nil {
+			continue
+		}
+		// Deliver in a goroutine so one slow endpoint doesn't block the others.
+		go s.deliver(&event, payloadBytes)
+	}
 }

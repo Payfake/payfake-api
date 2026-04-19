@@ -7,6 +7,7 @@ import (
 
 	"github.com/GordenArcher/payfake/internal/domain"
 	"github.com/GordenArcher/payfake/internal/middleware"
+	"github.com/GordenArcher/payfake/internal/repository"
 	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,7 @@ type ControlHandler struct {
 	logSvc      *service.LogService
 	authSvc     *service.AuthService
 	customerSvc *service.CustomerService
+	otpRepo     *repository.OTPRepository
 }
 
 func NewControlHandler(
@@ -31,6 +33,7 @@ func NewControlHandler(
 	logSvc *service.LogService,
 	authSvc *service.AuthService,
 	customerSvc *service.CustomerService,
+	otpRepo *repository.OTPRepository,
 ) *ControlHandler {
 	return &ControlHandler{
 		db:          db,
@@ -40,6 +43,7 @@ func NewControlHandler(
 		logSvc:      logSvc,
 		authSvc:     authSvc,
 		customerSvc: customerSvc,
+		otpRepo:     otpRepo,
 	}
 }
 
@@ -392,6 +396,61 @@ func (h *ControlHandler) ListCustomers(c *gin.Context) {
 	response.Success(c, http.StatusOK, "Customers fetched",
 		response.CustomerListFetched, gin.H{
 			"customers": customers,
+			"meta": gin.H{
+				"total":    total,
+				"page":     page,
+				"per_page": perPage,
+				"pages":    (total + int64(perPage) - 1) / int64(perPage),
+			},
+		})
+}
+
+// GetOTPLogs handles GET /api/v1/control/otp-logs
+// Returns OTP codes generated during charge flows for developer testing.
+// This endpoint exists purely for the simulator, in a real payment
+// system OTPs would be delivered via SMS and never stored or exposed.
+// Developers use this to get the OTP without needing a real phone.
+func (h *ControlHandler) GetOTPLogs(c *gin.Context) {
+	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
+	if !ok {
+		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	// Support filtering by reference for a specific transaction
+	reference := c.Query("reference")
+
+	if reference != "" {
+		logs, err := h.otpRepo.FindByReference(reference, merchantID)
+		if err != nil {
+			response.InternalErr(c, "Failed to fetch OTP logs")
+			return
+		}
+		response.Success(c, http.StatusOK, "OTP logs fetched",
+			response.OTPLogsFetched, gin.H{
+				"otp_logs": logs,
+			})
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 50
+	}
+
+	logs, total, err := h.otpRepo.ListByMerchant(merchantID, (page-1)*perPage, perPage)
+	if err != nil {
+		response.InternalErr(c, "Failed to fetch OTP logs")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "OTP logs fetched",
+		response.OTPLogsFetched, gin.H{
+			"otp_logs": logs,
 			"meta": gin.H{
 				"total":    total,
 				"page":     page,

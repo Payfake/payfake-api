@@ -16,23 +16,29 @@ type ChargeService struct {
 	chargeRepo      *repository.ChargeRepository
 	transactionRepo *repository.TransactionRepository
 	merchantRepo    *repository.MerchantRepository
+	otpRepo         *repository.OTPRepository
 	simulatorSvc    *SimulatorService
 	webhookSvc      *WebhookService
+	frontendURL     string
 }
 
 func NewChargeService(
 	chargeRepo *repository.ChargeRepository,
 	transactionRepo *repository.TransactionRepository,
 	merchantRepo *repository.MerchantRepository,
+	otpRepo *repository.OTPRepository,
 	simulatorSvc *SimulatorService,
 	webhookSvc *WebhookService,
+	frontendURL string,
 ) *ChargeService {
 	return &ChargeService{
 		chargeRepo:      chargeRepo,
 		transactionRepo: transactionRepo,
 		merchantRepo:    merchantRepo,
+		otpRepo:         otpRepo,
 		simulatorSvc:    simulatorSvc,
 		webhookSvc:      webhookSvc,
+		frontendURL:     frontendURL,
 	}
 }
 
@@ -194,6 +200,10 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
 
+	// Log OTP so developer can read it from /control/otp-logs during testing.
+	// This never goes to the client, only stored in the DB.
+	s.otpRepo.Create(tx.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
+
 	charge := &domain.Charge{
 		Base:          domain.Base{ID: uid.NewChargeID()},
 		MerchantID:    input.MerchantID,
@@ -286,6 +296,7 @@ func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
+	s.otpRepo.Create(input.MerchantID, input.Reference, string(domain.ChannelCard), "submit_pin", otpCode)
 
 	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
 		return nil, fmt.Errorf("failed to update flow status: %w", err)
@@ -334,6 +345,8 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 		if result.Status == domain.TransactionFailed {
 			return s.failCharge(charge, result.ErrorCode)
 		}
+		// Mark OTP as used so the log shows it was consumed
+		s.otpRepo.MarkUsed(input.Reference)
 		return s.succeedCharge(charge, input.Reference, input.MerchantID)
 	}
 
@@ -387,6 +400,7 @@ func (s *ChargeService) SubmitBirthday(input SubmitBirthdayInput) (*ChargeFlowRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
+	s.otpRepo.Create(input.MerchantID, input.Reference, string(domain.ChannelBankTransfer), "submit_birthday", otpCode)
 
 	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
 		return nil, fmt.Errorf("failed to update flow status: %w", err)
@@ -474,6 +488,7 @@ func (s *ChargeService) ResendOTP(input ResendOTPInput) (*ChargeFlowResponse, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
+	s.otpRepo.Create(input.MerchantID, input.Reference, string(charge.Channel), "resend_otp", newOTP)
 
 	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, newOTP); err != nil {
 		return nil, fmt.Errorf("failed to update OTP: %w", err)
@@ -638,6 +653,17 @@ func (s *ChargeService) GetMerchantByReference(reference string) (*domain.Mercha
 		return nil, ErrTransactionNotFound
 	}
 	return merchant, nil
+}
+
+// FetchChargeByTransactionID retrieves the charge for a transaction by its ID.
+// Used by the public transaction endpoint to include flow_status in the response
+// so the checkout page knows where in the flow a MoMo charge is during polling.
+func (s *ChargeService) FetchChargeByTransactionID(transactionID string) (*domain.Charge, error) {
+	charge, err := s.chargeRepo.FindByTransactionID(transactionID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+	return charge, nil
 }
 
 func safeCardLast4(cardNumber string) string {

@@ -211,4 +211,6 @@ const (
 	ChargeInvalidBirthday  Code = "CHARGE_INVALID_BIRTHDAY"
 	ChargeFlowExpired      Code = "CHARGE_FLOW_EXPIRED"
 	ChargeFlowInvalidStep  Code = "CHARGE_FLOW_INVALID_STEP"
+
+	OTPLogsFetched Code = "OTP_LOGS_FETCHED"
 )
