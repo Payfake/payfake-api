@@ -1,7 +1,7 @@
 # Getting Started
 
 This guide walks you through setting up Payfake locally and making your
-first simulated payment end-to-end.
+first simulated payment end-to-end including the full multi-step charge flow.
 
 ---
 
@@ -23,8 +23,7 @@ cd payfake
 docker-compose up --build
 ```
 
-The server starts at `http://localhost:8080` with a fresh PostgreSQL instance.
-All tables are created automatically on first run.
+Server starts at `http://localhost:8080`.
 
 ### Option 2 — Manual
 
@@ -34,7 +33,7 @@ cd payfake
 cp .env.example .env
 ```
 
-Edit `.env` with your local database credentials:
+Edit `.env`:
 
 ```bash
 DB_HOST=localhost
@@ -43,9 +42,10 @@ DB_USER=postgres
 DB_PASSWORD=yourpassword
 DB_NAME=payfake
 JWT_SECRET=your-secret-key-change-this
+FRONTEND_URL=http://localhost:3000
+JWT_ACCESS_EXPIRY_MINUTES=15
+JWT_REFRESH_EXPIRY_DAYS=7
 ```
-
-Run:
 
 ```bash
 go mod tidy
@@ -54,27 +54,23 @@ go run cmd/api/main.go
 
 ---
 
-## Verify the Server is Running
+## Verify
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-Expected response:
-
 ```json
 {
   "status": "success",
   "message": "Payfake is running",
-  "data": { "service": "payfake", "status": "ok" },
-  "metadata": { "timestamp": "...", "request_id": "..." },
-  "code": "HEALTH_OK"
+  "data": { "service": "payfake", "status": "ok" }
 }
 ```
 
 ---
 
-## Step 1 — Register a Merchant
+## Step 1 — Register
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/register \
@@ -86,23 +82,7 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
   }'
 ```
 
-Response:
-
-```json
-{
-  "data": {
-    "merchant": {
-      "id": "MRC_xxxxxxxxxxxx",
-      "business_name": "My Store",
-      "email": "dev@mystore.com",
-      "public_key": "pk_test_xxx"
-    },
-    "token": "eyJ..."
-  }
-}
-```
-
-Save the `token` — you need it to fetch your secret key.
+Save the `token` from the response.
 
 ---
 
@@ -110,18 +90,7 @@ Save the `token` — you need it to fetch your secret key.
 
 ```bash
 curl http://localhost:8080/api/v1/auth/keys \
-  -H "Authorization: Bearer eyJ..."
-```
-
-Response:
-
-```json
-{
-  "data": {
-    "public_key": "pk_test_xxx",
-    "secret_key": "sk_test_xxx"
-  }
-}
+  -H "Authorization: Bearer <token>"
 ```
 
 Save `sk_test_xxx` — this goes in your backend's environment variables.
@@ -143,93 +112,140 @@ curl -X POST http://localhost:8080/api/v1/transaction/initialize \
 ```
 
 Response:
-
 ```json
 {
   "data": {
-    "authorization_url": "http://localhost:5173?access_code=ACC_xxx",
+    "authorization_url": "http://localhost:3000?access_code=ACC_xxx",
     "access_code": "ACC_xxxxxxxxxxxx",
     "reference": "TXN_xxxxxxxxxxxx"
   }
 }
 ```
 
-The `authorization_url` is what you redirect your customer to. The `access_code`
-is what the checkout page uses to identify the transaction.
+The `authorization_url` is what you redirect your customer to.
 
 ---
 
-## Step 4 — Charge a Card
+## Step 4 — Simulate a Local Card Charge (Full Flow)
 
+### 4a — Initiate card charge
 ```bash
 curl -X POST http://localhost:8080/api/v1/charge/card \
   -H "Authorization: Bearer sk_test_xxx" \
   -H "Content-Type: application/json" \
   -d '{
     "access_code": "ACC_xxxxxxxxxxxx",
-    "card_number": "4111111111111111",
+    "card_number": "5061000000000000",
     "card_expiry": "12/26",
     "cvv": "123",
     "email": "customer@example.com"
   }'
 ```
 
-Response on success:
-
+Response:
 ```json
 {
   "data": {
-    "transaction": { "status": "success", "amount": 10000, ... },
-    "charge": { "channel": "card", "card_last4": "1111", ... }
-  },
-  "code": "CHARGE_SUCCESSFUL"
+    "status": "send_pin",
+    "reference": "TXN_xxxxxxxxxxxx",
+    "display_text": "Please enter your card PIN"
+  }
+}
+```
+
+### 4b — Submit PIN
+```bash
+curl -X POST http://localhost:8080/api/v1/charge/submit_pin \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reference": "TXN_xxxxxxxxxxxx",
+    "pin": "1234"
+  }'
+```
+
+Response:
+```json
+{
+  "data": {
+    "status": "send_otp",
+    "display_text": "Enter the OTP sent to your registered phone number"
+  }
+}
+```
+
+### 4c — Get the OTP from logs
+
+```bash
+curl http://localhost:8080/api/v1/control/logs?per_page=5 \
+  -H "Authorization: Bearer <jwt>"
+```
+
+Look for the `submit_pin` log entry — the OTP is in the response body.
+
+### 4d — Submit OTP
+
+```bash
+curl -X POST http://localhost:8080/api/v1/charge/submit_otp \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reference": "TXN_xxxxxxxxxxxx",
+    "otp": "482931"
+  }'
+```
+
+Response:
+```json
+{
+  "data": {
+    "status": "success",
+    "reference": "TXN_xxxxxxxxxxxx",
+    "transaction": { "status": "success", "amount": 10000 }
+  }
 }
 ```
 
 ---
 
-## Step 5 — Verify the Transaction
+## Step 5 — Verify
 
 ```bash
 curl http://localhost:8080/api/v1/transaction/verify/TXN_xxxxxxxxxxxx \
   -H "Authorization: Bearer sk_test_xxx"
 ```
 
-Always verify via this endpoint after a charge — never trust the charge
-response alone. This is the same pattern Paystack requires.
-
 ---
 
 ## Step 6 — Test a Failure Scenario
 
-Login to get a JWT then configure a failure scenario:
-
 ```bash
-# Login
+# Get JWT first
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "dev@mystore.com", "password": "secret123"}'
 
-# Set 100% failure rate
+# Force all charges to fail with insufficient funds
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
-  -H "Authorization: Bearer eyJ..." \
+  -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"failure_rate": 1.0}'
-```
+  -d '{
+    "force_status": "failed",
+    "error_code": "CHARGE_INSUFFICIENT_FUNDS"
+  }'
 
-Every subsequent charge will now fail. Reset when done:
-
-```bash
+# Reset when done
 curl -X POST http://localhost:8080/api/v1/control/scenario/reset \
-  -H "Authorization: Bearer eyJ..."
+  -H "Authorization: Bearer <jwt>"
 ```
 
 ---
 
 ## Next Steps
 
+- [Charge Flows](./charge-flows.md) — all four payment channels step by step
 - [Scenario Testing](./scenario-testing.md) — failure rates, delays, force outcomes
 - [Webhook Integration](./webhooks.md) — receiving and verifying webhook events
-- [Mobile Money Guide](./mobile-money.md) — async MoMo flow end-to-end
+- [Mobile Money Guide](./mobile-money.md) — async MoMo flow end to end
 - [API Reference](./api-reference.md) — complete endpoint documentation
-- [SDK Guides](./sdks.md) — using the Go, Python, JS and Rust SDKs
+- [SDK Guides](./sdks.md) — Go, Python, JS and Rust SDKs

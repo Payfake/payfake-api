@@ -1,8 +1,8 @@
 # Mobile Money Guide
 
-Mobile money is the dominant payment method across West Africa.
-Payfake simulates the full async MoMo flow, including the approval
-window, timeout scenarios and provider outages.
+Mobile money is the dominant payment method in West Africa.
+Payfake simulates the full async MoMo flow including OTP verification,
+the USSD prompt approval window, timeout scenarios and provider outages.
 
 ---
 
@@ -16,74 +16,54 @@ window, timeout scenarios and provider outages.
 
 ---
 
-## How MoMo Works (Real World)
+## Full Flow
 
-1. Your backend calls `POST /charge/mobile_money` with the customer's phone and provider
-2. Payfake sends a USSD prompt to the customer's phone
-3. Customer approves on their phone (or ignores it, timeout)
-4. Provider confirms or rejects
-5. Payfake fires `charge.success` or `charge.failed` webhook to your backend
-6. Your backend updates the order
+```
+Step 1: POST /charge/mobile_money
+  { phone: "+233241234567", provider: "mtn" }
+  ← { status: "send_otp", display_text: "Enter OTP sent to +233241***567" }
 
-Steps 3-6 happen asynchronously, the charge endpoint returns immediately
-with `status: pending` after step 2.
+Step 2: Read OTP from /control/logs
+  (In production this arrives via SMS)
 
----
+Step 3: POST /charge/submit_otp
+  { reference: "TXN_xxx", otp: "482931" }
+  ← { status: "pay_offline", display_text: "Approve the prompt on your phone" }
 
-## Integration Pattern
+Step 4: Checkout polls GET /api/v1/public/transaction/:access_code every 3s
+  ← { status: "pending" }  (still waiting)
+  ← { status: "success" }  (approved)
+  ← { status: "failed" }   (declined or timed out)
 
-```go
-// 1. Initialize transaction
-tx, _ := client.Transaction.Initialize(ctx, payfake.InitializeInput{
-    Email:    "customer@example.com",
-    Amount:   10000,
-    Currency: "GHS",
-})
-
-// 2. Charge mobile money — returns pending immediately
-charge, _ := client.Charge.MobileMoney(ctx, payfake.ChargeMomoInput{
-    AccessCode: tx.AccessCode,
-    Phone:      "+233241234567",
-    Provider:   "mtn",
-    Email:      "customer@example.com",
-})
-
-// charge.Transaction.Status is always "pending" here
-// DO NOT mark the order as paid yet
-
-// 3. Tell the customer to check their phone
-// 4. Wait for the webhook
-
-// In your webhook handler:
-func handleWebhook(event WebhookEvent) {
-    if event.Event == "charge.success" {
-        // NOW mark the order as paid
-        // reference is event.Data.Reference
-    }
-    if event.Event == "charge.failed" {
-        // notify customer, offer retry
-    }
-}
+Step 5: Webhook fires
+  POST your_webhook_url { event: "charge.success" or "charge.failed" }
 ```
 
 ---
 
-## Simulating MoMo Scenarios
+## Getting the OTP During Testing
 
-### Simulate MoMo timeout (customer ignores prompt)
+```bash
+curl "http://localhost:8080/api/v1/control/logs?per_page=10" \
+  -H "Authorization: Bearer <jwt>" | \
+  jq '.data.logs[] | select(.path | contains("mobile_money")) | .response_body'
+```
 
+The OTP is visible in the charge data inside the response body.
+
+---
+
+## Simulating Scenarios
+
+### MoMo timeout (customer ignores prompt)
 ```bash
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "force_status": "failed",
-    "error_code": "CHARGE_MOMO_TIMEOUT"
-  }'
+  -d '{"force_status": "failed", "error_code": "CHARGE_MOMO_TIMEOUT"}'
 ```
 
-### Simulate slow approval (5 second delay)
-
+### Slow approval (realistic 5 second wait)
 ```bash
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Authorization: Bearer <jwt>" \
@@ -91,41 +71,39 @@ curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -d '{"delay_ms": 5000}'
 ```
 
-Your app should handle up to 30 seconds of delay gracefully, show a
-"waiting for approval" state and don't time out too early.
-
-### Simulate provider outage
-
+### Provider outage
 ```bash
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Authorization: Bearer <jwt>" \
   -H "Content-Type: application/json" \
-  -d '{
-    "force_status": "failed",
-    "error_code": "CHARGE_MOMO_PROVIDER_UNAVAILABLE"
-  }'
+  -d '{"force_status": "failed", "error_code": "CHARGE_MOMO_PROVIDER_UNAVAILABLE"}'
+```
+
+### Invalid number
+```bash
+curl -X PUT http://localhost:8080/api/v1/control/scenario \
+  -H "Authorization: Bearer <jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"force_status": "failed", "error_code": "CHARGE_MOMO_INVALID_NUMBER"}'
 ```
 
 ---
 
-## Common MoMo Errors
+## Common Errors
 
 | Error | When it happens | How to handle |
 |-------|----------------|---------------|
-| `CHARGE_MOMO_TIMEOUT` | Customer ignored or missed prompt | Offer to resend or use different payment |
-| `CHARGE_MOMO_INVALID_NUMBER` | Number not on selected network | Ask customer to check their number and provider |
-| `CHARGE_MOMO_LIMIT_EXCEEDED` | Wallet daily/transaction limit | Ask customer to use a different payment method |
+| `CHARGE_MOMO_TIMEOUT` | Customer ignored or missed prompt | Offer resend or different payment |
+| `CHARGE_MOMO_INVALID_NUMBER` | Number not on selected network | Ask customer to check provider |
+| `CHARGE_MOMO_LIMIT_EXCEEDED` | Wallet limit reached | Offer alternative payment |
 | `CHARGE_MOMO_PROVIDER_UNAVAILABLE` | Network down | Retry later or offer alternative |
 
 ---
 
 ## UX Recommendations
 
-Based on real production MoMo integration patterns in Ghana:
-
-- Show a clear "Check your phone" message immediately after initiating
-- Display a countdown or spinner, customers expect to wait up to 60 seconds
-- If the webhook doesn't arrive within 2 minutes, call `GET /transaction/verify/:reference`
-  to check status — the webhook may have failed delivery
-- Always offer a fallback payment method, MoMo failures are common
-- Never auto-retry silently, the customer may have intentionally declined
+- Show "Check your phone" immediately after OTP submission
+- Display a countdown — customers expect to wait up to 60 seconds
+- If webhook doesn't arrive within 2 minutes call `GET /transaction/verify/:reference`
+- Always offer a fallback payment method
+- Never auto-retry silently — the customer may have deliberately declined

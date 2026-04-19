@@ -4,7 +4,6 @@ All notable changes to Payfake are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
-
 ## [Unreleased]
 
 ### Planned
@@ -15,6 +14,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Webhook retry background worker
 - Admin panel for multi-merchant management
 - Rate limiting per merchant key
+
+
+---
+## [0.2.0] — 2026-04-17
+
+### Added
+
+**Multi-step charge flows**
+- Card local (Verve) flow: send_pin → send_otp → success/failed
+- Card international (Visa/Mastercard) flow: open_url → 3DS simulation → success/failed
+- Mobile money flow: send_otp → pay_offline → webhook resolution
+- Bank transfer flow: send_birthday → send_otp → success/failed
+- POST /charge/submit_pin — card PIN submission
+- POST /charge/submit_otp — OTP submission for card, MoMo and bank flows
+- POST /charge/submit_birthday — date of birth for bank flow
+- POST /charge/submit_address — billing address for AVS
+- POST /charge/resend_otp — regenerate OTP (old one invalidated)
+- GET  /charge/:reference — fetch current charge flow state
+- Public equivalents for all submit endpoints under /api/v1/public/
+- POST /api/v1/public/simulate/3ds/:reference — complete simulated 3DS
+
+**OTP simulation**
+- crypto/rand 6-digit OTP generation per charge step
+- OTP stored on charge record, never returned in API response
+- OTP visible in /control/logs introspection for developer testing
+
+**Card type detection**
+- Verve ranges (5061, 5062, 5063, 6500, 6501) → local → PIN flow
+- All other Visa/Mastercard → international → 3DS flow
+
+**3DS simulation**
+- three_ds_url points to React checkout app /simulate/3ds route
+- POST /public/simulate/3ds/:reference resolves charge via JSON API
+
+**Cookie-based dashboard auth**
+- Access token (15 min) + refresh token (7 days) set as HttpOnly cookies
+- Refresh token rotation on every /auth/refresh call
+- POST /auth/refresh — exchange refresh cookie for new token pair
+- GET  /auth/me — hydrate dashboard session on mount
+- POST /auth/logout — clear both cookies
+
+**Merchant management**
+- GET  /merchant — full profile
+- PUT  /merchant — update business name and webhook URL
+- PUT  /merchant/password — change password with current password verification
+- GET  /merchant/webhook — webhook URL and status
+- POST /merchant/webhook — set webhook URL from dashboard
+- POST /merchant/webhook/test — fire test webhook to verify endpoint
+
+**Dashboard endpoints (JWT)**
+- GET /control/stats — overview numbers + 7-day activity chart
+- GET /control/transactions — transaction list without secret key
+- GET /control/customers — customer list without secret key
+
+**CORS**
+- Single root-level CORS middleware using AllowOriginFunc
+- AllowCredentials: true for HttpOnly cookie support
+- OPTIONS preflight handled before any route middleware
+
+**Config**
+- JWT_ACCESS_EXPIRY_MINUTES (default 15)
+- JWT_REFRESH_EXPIRY_DAYS (default 7)
+- FRONTEND_URL used for authorization_url and three_ds_url generation
+
 
 ---
 
