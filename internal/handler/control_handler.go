@@ -330,7 +330,7 @@ func (h *ControlHandler) ClearLogs(c *gin.Context) {
 
 // ListTransactions handles GET /api/v1/control/transactions
 // JWT-authenticated version of transaction list for the dashboard.
-// The regular /transaction endpoint requires secret key — this one
+// The regular /transaction endpoint requires secret key, this one
 // uses the dashboard JWT so the dashboard doesn't need to store the secret key.
 func (h *ControlHandler) ListTransactions(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
@@ -342,6 +342,8 @@ func (h *ControlHandler) ListTransactions(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
 	status := domain.TransactionStatus(c.Query("status"))
+	// search matches reference or customer email
+	search := c.Query("search")
 
 	if page < 1 {
 		page = 1
@@ -350,7 +352,7 @@ func (h *ControlHandler) ListTransactions(c *gin.Context) {
 		perPage = 50
 	}
 
-	transactions, total, err := h.txSvc.List(merchantID, status, page, perPage)
+	transactions, total, err := h.txSvc.ListWithSearch(merchantID, status, search, page, perPage)
 	if err != nil {
 		response.InternalErr(c, "Failed to fetch transactions")
 		return

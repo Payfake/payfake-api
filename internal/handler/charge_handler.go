@@ -310,11 +310,14 @@ func (h *ChargeHandler) SubmitOTP(c *gin.Context) {
 	})
 
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidOTP) {
-			response.Error(c, http.StatusUnprocessableEntity,
-				"Invalid OTP — please check and try again",
+		if errors.Is(err, service.ErrInvalidOTP) || errors.Is(err, service.ErrOTPExpired) {
+			msg := "Invalid OTP — please check and try again"
+			if errors.Is(err, service.ErrOTPExpired) {
+				msg = "OTP has expired — request a new one"
+			}
+			response.Error(c, http.StatusUnprocessableEntity, msg,
 				response.ChargeInvalidOTP, []response.ErrorField{
-					{Field: "otp", Message: "OTP is incorrect or has expired"},
+					{Field: "otp", Message: msg},
 				})
 			return
 		}
@@ -691,11 +694,14 @@ func (h *ChargeHandler) PublicSubmitOTP(c *gin.Context) {
 	})
 
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidOTP) {
-			response.Error(c, http.StatusUnprocessableEntity,
-				"Invalid OTP — please check and try again",
+		if errors.Is(err, service.ErrInvalidOTP) || errors.Is(err, service.ErrOTPExpired) {
+			msg := "Invalid OTP — please check and try again"
+			if errors.Is(err, service.ErrOTPExpired) {
+				msg = "OTP has expired — request a new one"
+			}
+			response.Error(c, http.StatusUnprocessableEntity, msg,
 				response.ChargeInvalidOTP, []response.ErrorField{
-					{Field: "otp", Message: "OTP is incorrect"},
+					{Field: "otp", Message: msg},
 				})
 			return
 		}

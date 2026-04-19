@@ -17,67 +17,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
 ---
-## [0.2.0] — 2026-04-17
+## [0.2.0] — 2026-04-19
 
 ### Added
 
-**Multi-step charge flows**
-- Card local (Verve) flow: send_pin → send_otp → success/failed
-- Card international (Visa/Mastercard) flow: open_url → 3DS simulation → success/failed
-- Mobile money flow: send_otp → pay_offline → webhook resolution
-- Bank transfer flow: send_birthday → send_otp → success/failed
-- POST /charge/submit_pin — card PIN submission
-- POST /charge/submit_otp — OTP submission for card, MoMo and bank flows
-- POST /charge/submit_birthday — date of birth for bank flow
-- POST /charge/submit_address — billing address for AVS
-- POST /charge/resend_otp — regenerate OTP (old one invalidated)
-- GET  /charge/:reference — fetch current charge flow state
-- Public equivalents for all submit endpoints under /api/v1/public/
-- POST /api/v1/public/simulate/3ds/:reference — complete simulated 3DS
+**Multi-step charge flows** — mirrors real Paystack flows exactly
+- Card local (Verve): send_pin → send_otp → success/failed
+- Card international (Visa/Mastercard): open_url → 3DS → success/failed
+- Mobile money: send_otp → pay_offline → webhook
+- Bank transfer: send_birthday → send_otp → success/failed
+- POST /charge/submit_pin
+- POST /charge/submit_otp
+- POST /charge/submit_birthday
+- POST /charge/submit_address
+- POST /charge/resend_otp
+- GET  /charge/:reference
+- Public equivalents for all submit endpoints
 
 **OTP simulation**
-- crypto/rand 6-digit OTP generation per charge step
-- OTP stored on charge record, never returned in API response
-- OTP visible in /control/logs introspection for developer testing
-
-**Card type detection**
-- Verve ranges (5061, 5062, 5063, 6500, 6501) → local → PIN flow
-- All other Visa/Mastercard → international → 3DS flow
+- crypto/rand 6-digit OTP per charge step
+- OTPLog domain model — reference, channel, step, used, expires_at
+- OTP expiry enforced — 10 minute window, rejected after expiry
+- GET /control/otp-logs?reference=xxx — read OTPs without a real phone
 
 **3DS simulation**
 - three_ds_url points to React checkout app /simulate/3ds route
-- POST /public/simulate/3ds/:reference resolves charge via JSON API
+- POST /public/simulate/3ds/:reference resolves via JSON API
+
+**MoMo polling**
+- GET /public/transaction/verify/:reference — public polling endpoint
+- Returns transaction status + charge flow_status
+- Checkout page polls every 3s during pay_offline state
 
 **Cookie-based dashboard auth**
-- Access token (15 min) + refresh token (7 days) set as HttpOnly cookies
-- Refresh token rotation on every /auth/refresh call
-- POST /auth/refresh — exchange refresh cookie for new token pair
-- GET  /auth/me — hydrate dashboard session on mount
-- POST /auth/logout — clear both cookies
+- Access token (15 min) + refresh token (7 days) as HttpOnly cookies
+- Refresh token rotation on every /auth/refresh
+- POST /auth/refresh, GET /auth/me, POST /auth/logout
 
 **Merchant management**
-- GET  /merchant — full profile
-- PUT  /merchant — update business name and webhook URL
-- PUT  /merchant/password — change password with current password verification
-- GET  /merchant/webhook — webhook URL and status
-- POST /merchant/webhook — set webhook URL from dashboard
-- POST /merchant/webhook/test — fire test webhook to verify endpoint
+- GET/PUT /merchant — profile management
+- PUT /merchant/password — password change with current password verification
+- GET/POST /merchant/webhook — webhook URL management
+- POST /merchant/webhook/test — test webhook with rate limiting (5/min)
 
-**Dashboard endpoints (JWT)**
-- GET /control/stats — overview numbers + 7-day activity chart
-- GET /control/transactions — transaction list without secret key
-- GET /control/customers — customer list without secret key
+**Dashboard endpoints**
+- GET /control/stats — overview + 7-day activity chart
+- GET /control/transactions — JWT-based with search and status filter
+- GET /control/customers — JWT-based
 
-**CORS**
-- Single root-level CORS middleware using AllowOriginFunc
-- AllowCredentials: true for HttpOnly cookie support
-- OPTIONS preflight handled before any route middleware
+**Security fixes**
+- OTP expiry enforcement — 10 minute window
+- Cross-merchant reference validation on public submit endpoints
+- FindByTransactionID returns latest charge (DESC order)
+- 3DS URL uses FRONTEND_URL from config not hardcoded localhost
+- 2MB request body size limit
+- Graceful shutdown — SIGINT/SIGTERM with 10 second drain window
+- Webhook retry worker — background goroutine, 60 second tick, context-aware
 
-**Config**
-- JWT_ACCESS_EXPIRY_MINUTES (default 15)
-- JWT_REFRESH_EXPIRY_DAYS (default 7)
-- FRONTEND_URL used for authorization_url and three_ds_url generation
-
+**SDKs — all four updated**
+- SubmitPIN, SubmitOTP, SubmitBirthday, SubmitAddress, ResendOTP, Simulate3DS
+- GetOTPLogs with reference filter
+- ListTransactions (JWT, with search)
+- ListCustomers (JWT)
+- GetProfile, UpdateProfile
+- GetWebhookURL, UpdateWebhookURL, TestWebhook
+- MerchantProfile, ChargeFlowResponse, OTPLog types
 
 ---
 

@@ -48,4 +48,5 @@ var (
 	ErrInvalidOTP            = errors.New("invalid OTP")
 	ErrChargeFlowInvalidStep = errors.New("invalid step in charge flow")
 	ErrChargeFlowExpired     = errors.New("charge flow has expired")
+	ErrOTPExpired            = errors.New("OTP has expired, request a new one")
 )

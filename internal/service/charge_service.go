@@ -151,7 +151,10 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		// opens this in an iframe or redirect, simulates the
 		// customer completing verification, then the flow resolves.
 		charge.FlowStatus = domain.FlowOpenURL
-		charge.ThreeDSURL = fmt.Sprintf("http://localhost:3000/simulate/3ds/%s", tx.Reference)
+		// Uses FRONTEND_URL from config, works in production.
+		// Developer sets FRONTEND_URL=https://checkout.payfake.co in .env
+		charge.ThreeDSURL = fmt.Sprintf("%s/simulate/3ds/%s", s.frontendURL, tx.Reference)
+
 	} else {
 		// Local Ghana cards start with PIN entry.
 		charge.FlowStatus = domain.FlowSendPIN
@@ -337,15 +340,30 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 		return nil, ErrInvalidOTP
 	}
 
-	// Check if the scenario forces an OTP failure.
+	// Check OTP expiry, a 10-minute-old OTP is rejected.
+	// We look up the most recent unused OTP log for this reference
+	// and verify it hasn't expired. This prevents replay attacks where
+	// a valid OTP from a previous session is reused.
+	otpLogs, err := s.otpRepo.FindByReference(input.Reference, input.MerchantID)
+	if err != nil || len(otpLogs) == 0 {
+		return nil, ErrInvalidOTP
+	}
+
+	// The most recent OTP is first, FindByReference orders DESC.
+	latestOTP := otpLogs[0]
+	if latestOTP.Used {
+		return nil, ErrInvalidOTP
+	}
+	if time.Now().After(latestOTP.ExpiresAt) {
+		return nil, ErrOTPExpired
+	}
+
 	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, charge.Channel)
 
-	// For card charges, resolve final outcome after OTP.
 	if charge.Channel == domain.ChannelCard {
 		if result.Status == domain.TransactionFailed {
 			return s.failCharge(charge, result.ErrorCode)
 		}
-		// Mark OTP as used so the log shows it was consumed
 		s.otpRepo.MarkUsed(input.Reference)
 		return s.succeedCharge(charge, input.Reference, input.MerchantID)
 	}
@@ -357,6 +375,7 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 			return nil, fmt.Errorf("failed to update flow status: %w", err)
 		}
 		charge.FlowStatus = domain.FlowPayOffline
+		s.otpRepo.MarkUsed(input.Reference)
 
 		tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
 
@@ -371,6 +390,15 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 			Charge:      charge,
 			Transaction: tx,
 		}, nil
+	}
+
+	// Bank channel OTP
+	if charge.Channel == domain.ChannelBankTransfer {
+		if result.Status == domain.TransactionFailed {
+			return s.failCharge(charge, result.ErrorCode)
+		}
+		s.otpRepo.MarkUsed(input.Reference)
+		return s.succeedCharge(charge, input.Reference, input.MerchantID)
 	}
 
 	return nil, ErrChargeFlowInvalidStep
@@ -638,20 +666,36 @@ func (s *ChargeService) findPendingTransaction(accessCode, reference, merchantID
 	return tx, nil
 }
 
-// GetMerchantByReference resolves the merchant through a transaction reference.
-// Used by public submit endpoints and the 3DS simulation endpoint.
+// GetMerchantByReference resolves the merchant who owns the charge
+// for a given transaction reference. We go through the charge record
+// not just the transaction, this ensures the reference has an active
+// charge initiated by a real client, not just any transaction reference
+// in the system. Prevents cross-merchant OTP submission attacks where
+// a malicious client submits an OTP for another merchant's transaction.
 func (s *ChargeService) GetMerchantByReference(reference string) (*domain.Merchant, error) {
-	// We search across all merchants since public endpoints don't have a merchant context.
-	// We find the transaction by reference (unique across the system) then get its merchant.
+	// Find transaction by reference. unscoped since public endpoints
+	// don't have merchant context yet.
 	var tx domain.Transaction
-	result := s.transactionRepo.DB().Where("reference = ?", reference).First(&tx)
+	result := s.transactionRepo.DB().
+		Where("reference = ?", reference).
+		First(&tx)
 	if result.Error != nil {
 		return nil, ErrTransactionNotFound
 	}
+
+	// Verify a charge actually exists for this transaction.
+	// Without this check, any transaction reference (even ones that
+	// were never charged) could be used to call submit endpoints.
+	_, err := s.chargeRepo.FindByTransactionID(tx.ID)
+	if err != nil {
+		return nil, ErrChargeNotFound
+	}
+
 	merchant, err := s.merchantRepo.FindByID(tx.MerchantID)
 	if err != nil {
 		return nil, ErrTransactionNotFound
 	}
+
 	return merchant, nil
 }
 

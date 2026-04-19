@@ -21,12 +21,16 @@ func (r *ChargeRepository) Create(charge *domain.Charge) error {
 	return r.db.Create(charge).Error
 }
 
-// FindByTransactionID retrieves the charge for a given transaction.
-// One transaction has at most one charge, if you need to retry
-// a failed charge you initialize a new transaction.
+// FindByTransactionID retrieves the most recent charge for a transaction.
+// We order by created_at DESC so if a transaction has multiple charge
+// attempts (retry after failure) we always get the latest one, which
+// is the one the checkout page is currently working with.
 func (r *ChargeRepository) FindByTransactionID(transactionID string) (*domain.Charge, error) {
 	var charge domain.Charge
-	result := r.db.Where("transaction_id = ?", transactionID).First(&charge)
+	result := r.db.
+		Where("transaction_id = ?", transactionID).
+		Order("created_at DESC").
+		First(&charge)
 	if result.Error != nil {
 		return nil, result.Error
 	}

@@ -282,3 +282,30 @@ func (s *TransactionService) GetMerchantForTransaction(merchantID string) (*doma
 	}
 	return merchant, nil
 }
+
+// ListWithSearch returns paginated transactions with optional search.
+func (s *TransactionService) ListWithSearch(
+	merchantID string,
+	status domain.TransactionStatus,
+	search string,
+	page, perPage int,
+) ([]domain.Transaction, int64, error) {
+	offset := (page - 1) * perPage
+	return s.transactionRepo.ListWithSearch(merchantID, status, search, offset, perPage)
+}
+
+// GetByReference retrieves a transaction by reference without merchant scoping.
+// Used by public endpoints where we don't have merchant context.
+// Reference is globally unique so this is safe, it can't be used to
+// access another merchant's data because we only return non-sensitive fields.
+func (s *TransactionService) GetByReference(reference string) (*domain.Transaction, error) {
+	var tx domain.Transaction
+	result := s.transactionRepo.DB().
+		Preload("Customer").
+		Where("reference = ?", reference).
+		First(&tx)
+	if result.Error != nil {
+		return nil, ErrTransactionNotFound
+	}
+	return &tx, nil
+}

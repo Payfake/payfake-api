@@ -41,15 +41,80 @@ Step 5: Webhook fires
 
 ---
 
-## Getting the OTP During Testing
+
+## Reading OTPs During Testing
+
+OTPs are generated server-side and stored in the OTP log table.
+They are never returned in any API response.
+
+Read the OTP for a specific transaction:
 
 ```bash
-curl "http://localhost:8080/api/v1/control/logs?per_page=10" \
-  -H "Authorization: Bearer <jwt>" | \
-  jq '.data.logs[] | select(.path | contains("mobile_money")) | .response_body'
+curl "http://localhost:8080/api/v1/control/otp-logs?reference=TXN_xxx" \
+  -H "Authorization: Bearer <jwt>"
 ```
 
-The OTP is visible in the charge data inside the response body.
+Response:
+```json
+{
+  "data": {
+    "otp_logs": [
+      {
+        "id": "LOG_xxx",
+        "reference": "TXN_xxx",
+        "channel": "card",
+        "otp_code": "482931",
+        "step": "submit_pin",
+        "used": false,
+        "expires_at": "2026-04-12T00:10:00Z",
+        "created_at": "2026-04-12T00:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+The most recent unused OTP is the one to submit. OTPs expire after 10 minutes.
+If the OTP has expired, call `resend_otp` to generate a fresh one.
+
+---
+
+## Polling During pay_offline
+
+After `submit_otp` returns `pay_offline` the checkout page polls
+`GET /api/v1/public/transaction/verify/:reference` every 3 seconds:
+
+```bash
+curl http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx
+```
+
+Response while pending:
+```json
+{
+  "data": {
+    "status": "pending",
+    "reference": "TXN_xxx",
+    "charge": { "flow_status": "pay_offline" }
+  }
+}
+```
+
+Response when resolved:
+```json
+{
+  "data": {
+    "status": "success",
+    "reference": "TXN_xxx",
+    "paid_at": "2026-04-12T00:00:00Z",
+    "charge": { "flow_status": "success" }
+  }
+}
+```
+
+Stop polling when `status` is `success` or `failed`.
+Always confirm with `GET /transaction/verify/:reference` using your secret key
+before marking the order as paid — the public verify endpoint is for
+checkout page polling only.
 
 ---
 

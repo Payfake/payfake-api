@@ -167,6 +167,7 @@ Auth: Cookie or Bearer (JWT)
 | POST | `/transactions/:ref/force` | Force transaction outcome |
 | GET | `/logs` | Request/response introspection logs |
 | DELETE | `/logs` | Clear logs |
+| GET | `/otp-logs` | OTP codes generated during charge flows |
 
 **Stats response:**
 ```json
@@ -217,6 +218,7 @@ Auth: None — `access_code` in request body or URL
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/transaction/verify/:reference` | Poll transaction status (MoMo) |
 | GET | `/transaction/:access_code` | Load transaction for checkout page |
 | POST | `/charge/card` | Browser-safe card charge |
 | POST | `/charge/mobile_money` | Browser-safe MoMo charge |
@@ -319,6 +321,7 @@ GET     /api/v1/control/webhooks/:id/attempts              Cookie or Bearer
 POST    /api/v1/control/transactions/:ref/force            Cookie or Bearer
 GET     /api/v1/control/logs                               Cookie or Bearer
 DELETE  /api/v1/control/logs                               Cookie or Bearer
+GET     /api/v1/control/otp-logs                           Cookie or Bearer
 
 GET     /api/v1/public/transaction/:access_code            None
 POST    /api/v1/public/charge/card                         None
@@ -330,6 +333,7 @@ POST    /api/v1/public/charge/submit_birthday              None
 POST    /api/v1/public/charge/submit_address               None
 POST    /api/v1/public/charge/resend_otp                   None
 POST    /api/v1/public/simulate/3ds/:reference             None
+GET     /api/v1/public/transaction/verify/:reference       None
 ```
 
 **Total: 51 endpoints**

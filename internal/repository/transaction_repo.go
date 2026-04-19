@@ -155,3 +155,47 @@ func (r *TransactionRepository) FindByCustomer(customerID, merchantID string, of
 
 	return transactions, total, result.Error
 }
+
+// ListWithSearch returns paginated transactions with optional status and search filters.
+// search matches against reference or customer email, the two fields a developer
+// is most likely to search by from the dashboard.
+func (r *TransactionRepository) ListWithSearch(
+	merchantID string,
+	status domain.TransactionStatus,
+	search string,
+	offset, limit int,
+) ([]domain.Transaction, int64, error) {
+	var transactions []domain.Transaction
+	var total int64
+
+	query := r.db.Model(&domain.Transaction{}).
+		Where("transactions.merchant_id = ?", merchantID)
+
+	if status != "" {
+		query = query.Where("transactions.status = ?", status)
+	}
+
+	if search != "" {
+		// Join customers to search by email.
+		// We search reference directly on the transaction and email
+		// through the customer join.
+		query = query.
+			Joins("LEFT JOIN customers ON customers.id = transactions.customer_id").
+			Where(
+				"transactions.reference ILIKE ? OR customers.email ILIKE ?",
+				"%"+search+"%",
+				"%"+search+"%",
+			)
+	}
+
+	query.Count(&total)
+
+	result := query.
+		Preload("Customer").
+		Order("transactions.created_at DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&transactions)
+
+	return transactions, total, result.Error
+}

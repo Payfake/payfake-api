@@ -125,7 +125,11 @@ func (h *TransactionHandler) Verify(c *gin.Context) {
 }
 
 // PublicVerify handles GET /api/v1/public/transaction/verify/:reference
-// No authentication required - called from checkout page for polling
+// Called by the React checkout page to poll transaction status during
+// MoMo pay_offline state. No secret key required, the reference is
+// not sensitive and the response only returns safe public fields.
+// The checkout page polls this every 3 seconds after submit_otp returns
+// pay_offline, stopping when status becomes success or failed.
 func (h *TransactionHandler) PublicVerify(c *gin.Context) {
 	reference := c.Param("reference")
 	if reference == "" {
@@ -133,23 +137,39 @@ func (h *TransactionHandler) PublicVerify(c *gin.Context) {
 		return
 	}
 
-	tx, err := h.txSvc.VerifyPublic(reference)
+	// Unscoped lookup, we don't have merchant context on public endpoints.
+	// Reference is globally unique so this is safe.
+	tx, err := h.txSvc.GetByReference(reference)
 	if err != nil {
-		if errors.Is(err, service.ErrTransactionNotFound) {
-			response.NotFoundErr(c, "Transaction not found")
-			return
-		}
-		response.InternalErr(c, "Failed to verify transaction")
+		response.NotFoundErr(c, "Transaction not found")
 		return
 	}
 
-	// Return limited public information
+	// Fetch current charge for flow_status.
+	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
+
+	var chargeData gin.H
+	if charge != nil {
+		chargeData = gin.H{
+			"flow_status": charge.FlowStatus,
+			"status":      charge.Status,
+			"error_code":  charge.ChargeErrorCode,
+			"channel":     charge.Channel,
+		}
+	}
+
+	// Return only what the checkout page needs for polling.
+	// We deliberately exclude sensitive fields like merchant_id,
+	// access_code and callback_url, the checkout page already
+	// has those from the initial transaction fetch on mount.
 	response.Success(c, http.StatusOK, "Transaction verified",
-		"TRANSACTION_VERIFIED", gin.H{
-			"reference": tx.Reference,
+		response.TransactionVerified, gin.H{
 			"status":    tx.Status,
+			"reference": tx.Reference,
 			"amount":    tx.Amount,
 			"currency":  tx.Currency,
+			"paid_at":   tx.PaidAt,
+			"charge":    chargeData,
 		})
 }
 

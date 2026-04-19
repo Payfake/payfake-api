@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/GordenArcher/payfake/internal/middleware"
@@ -27,6 +28,41 @@ func NewWebhookHandler(db *gorm.DB, merchantSvc *service.MerchantService, authSv
 
 type updateWebhookURLRequest struct {
 	WebhookURL string `json:"webhook_url" binding:"required,url"`
+}
+
+var (
+	webhookTestMu      sync.Mutex
+	webhookTestBuckets = make(map[string]*webhookTestBucket)
+)
+
+type webhookTestBucket struct {
+	count       int
+	windowStart time.Time
+}
+
+// webhookTestRateLimit returns true if the merchant is within the
+// 5-per-minute limit, false if they've exceeded it.
+func webhookTestRateLimit(merchantID string) bool {
+	webhookTestMu.Lock()
+	defer webhookTestMu.Unlock()
+
+	b, ok := webhookTestBuckets[merchantID]
+	if !ok {
+		webhookTestBuckets[merchantID] = &webhookTestBucket{
+			count:       1,
+			windowStart: time.Now(),
+		}
+		return true
+	}
+
+	if time.Since(b.windowStart) >= time.Minute {
+		b.count = 1
+		b.windowStart = time.Now()
+		return true
+	}
+
+	b.count++
+	return b.count <= 5
 }
 
 // UpdateWebhookURL handles POST /api/v1/merchant/webhook
@@ -84,6 +120,15 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
 		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	// Rate limit — 5 test webhooks per minute per merchant.
+	// Stored in a package-level sync.Map keyed by merchant ID.
+	if !webhookTestRateLimit(merchantID) {
+		response.Error(c, http.StatusTooManyRequests,
+			"Too many test webhooks — wait a minute before trying again",
+			response.RateLimitExceeded, []response.ErrorField{})
 		return
 	}
 

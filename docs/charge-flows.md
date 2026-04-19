@@ -159,23 +159,38 @@ Webhook: charge.success or charge.failed fires
 
 ## Reading OTPs During Testing
 
-OTPs are never returned in API responses — they appear in the introspection logs.
+OTPs are generated server-side and stored in the OTP log table.
+They are never returned in any API response.
+
+Read the OTP for a specific transaction:
 
 ```bash
-# Get the most recent logs
-curl "http://localhost:8080/api/v1/control/logs?per_page=10" \
+curl "http://localhost:8080/api/v1/control/otp-logs?reference=TXN_xxx" \
   -H "Authorization: Bearer <jwt>"
 ```
 
-Look for the log entry where `path` is `/charge/submit_pin` or `/charge/mobile_money`. The `response_body` of the **previous step** contains the OTP in the charge data.
-
-Alternatively query by reference:
-```bash
-curl "http://localhost:8080/api/v1/control/logs?per_page=50" \
-  -H "Authorization: Bearer <jwt>" | \
-  jq '.data.logs[] | select(.path | contains("submit_pin"))'
+Response:
+```json
+{
+  "data": {
+    "otp_logs": [
+      {
+        "id": "LOG_xxx",
+        "reference": "TXN_xxx",
+        "channel": "card",
+        "otp_code": "482931",
+        "step": "submit_pin",
+        "used": false,
+        "expires_at": "2026-04-12T00:10:00Z",
+        "created_at": "2026-04-12T00:00:00Z"
+      }
+    ]
+  }
+}
 ```
 
+The most recent unused OTP is the one to submit. OTPs expire after 10 minutes.
+If the OTP has expired, call `resend_otp` to generate a fresh one.
 ---
 
 ## Forcing Flow Outcomes

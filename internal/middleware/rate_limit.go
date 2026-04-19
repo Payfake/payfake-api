@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -77,6 +78,57 @@ func RateLimit(maxRequests int, windowDuration time.Duration) gin.HandlerFunc {
 				c,
 				429,
 				"Too many requests, please slow down",
+				response.RateLimitExceeded,
+				[]response.ErrorField{},
+			)
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// webhookTestLimiter tracks per-merchant webhook test attempts.
+// Separate from the global IP-based limiter, merchants share IPs
+// behind proxies so IP-based limiting doesn't work here.
+var webhookTestLimiter sync.Map
+
+// RateLimitWebhookTest limits webhook test requests to 5 per minute per merchant.
+// Called as middleware on POST /merchant/webhook/test only.
+func RateLimitWebhookTest() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Get merchant ID from JWT context, already validated by RequireJWT.
+		merchantID, exists := c.Get("merchant_id_from_jwt")
+		if !exists {
+			// Fall back to IP if merchant ID not in context.
+			merchantID = c.ClientIP()
+		}
+
+		key := fmt.Sprintf("webhook_test_%v", merchantID)
+
+		raw, _ := webhookTestLimiter.LoadOrStore(key, &bucket{
+			windowStart: time.Now(),
+		})
+		b := raw.(*bucket)
+
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		if time.Since(b.windowStart) >= time.Minute {
+			b.count = 0
+			b.windowStart = time.Now()
+		}
+
+		b.count++
+
+		// 5 test webhooks per minute per merchant is generous
+		// enough for legitimate testing, low enough to prevent abuse.
+		if b.count > 5 {
+			response.Error(
+				c,
+				429,
+				"Too many test webhooks — wait a minute before trying again",
 				response.RateLimitExceeded,
 				[]response.ErrorField{},
 			)

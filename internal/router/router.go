@@ -79,22 +79,16 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	// Public checkout, add submit endpoints
 	public := r.Group("/api/v1/public")
 	{
-		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
 		public.GET("/transaction/verify/:reference", transactionHandler.PublicVerify)
+		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)
 		public.POST("/charge/card", chargeHandler.PublicChargeCard)
 		public.POST("/charge/mobile_money", chargeHandler.PublicChargeMobileMoney)
 		public.POST("/charge/bank", chargeHandler.PublicChargeBank)
-
-		// Public submit endpoints, called from checkout page
 		public.POST("/charge/submit_pin", chargeHandler.PublicSubmitPIN)
 		public.POST("/charge/submit_otp", chargeHandler.PublicSubmitOTP)
 		public.POST("/charge/submit_birthday", chargeHandler.PublicSubmitBirthday)
-
 		public.POST("/charge/submit_address", chargeHandler.PublicSubmitAddress)
 		public.POST("/charge/resend_otp", chargeHandler.PublicResendOTP)
-
-		// 3DS simulation, public, called from checkout page after fake 3DS form
-		//
 		public.POST("/simulate/3ds/:reference", chargeHandler.Simulate3DS)
 	}
 
