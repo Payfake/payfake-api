@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -33,11 +33,15 @@ type initializeRequest struct {
 	Metadata    domain.JSON                 `json:"metadata"`
 }
 
-// Initialize handles POST /api/v1/transaction/initialize
+// Initialize handles POST /transaction/initialize
+// Response matches Paystack exactly:
+// { "status": true, "message": "Authorization URL created",
+//
+//	"data": { "authorization_url": "...", "access_code": "...", "reference": "..." } }
 func (h *TransactionHandler) Initialize(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
@@ -47,8 +51,6 @@ func (h *TransactionHandler) Initialize(c *gin.Context) {
 		return
 	}
 
-	// Default currency to GHS if not provided,
-	// most integrations in Ghana won't bother specifying it.
 	currency := domain.CurrencyGHS
 	if req.Currency != "" {
 		currency = domain.Currency(req.Currency)
@@ -64,26 +66,25 @@ func (h *TransactionHandler) Initialize(c *gin.Context) {
 		Channels:    req.Channels,
 		Metadata:    req.Metadata,
 	})
-
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrReferenceTaken):
-			response.Error(c, http.StatusConflict, "Transaction reference already exists",
-				response.TransactionReferenceTaken, []response.ErrorField{
-					{Field: "reference", Message: "This reference has already been used"},
-				})
+			response.UnprocessableErr(c,
+				"Duplicate Transaction Reference",
+				response.TransactionReferenceTaken,
+				field("reference", "unique", "Transaction reference already exists"))
 		case errors.Is(err, service.ErrInvalidAmount):
-			response.Error(c, http.StatusUnprocessableEntity, "Invalid amount",
-				response.TransactionInvalidAmount, []response.ErrorField{
-					{Field: "amount", Message: "Amount must be greater than zero"},
-				})
+			response.UnprocessableErr(c,
+				"Invalid amount",
+				response.TransactionInvalidAmount,
+				field("amount", "min", "Amount must be greater than 0"))
 		case errors.Is(err, service.ErrInvalidCurrency):
-			response.Error(c, http.StatusUnprocessableEntity, "Unsupported currency",
-				response.TransactionInvalidCurrency, []response.ErrorField{
-					{Field: "currency", Message: "Supported currencies: GHS, NGN, KES, USD"},
-				})
+			response.UnprocessableErr(c,
+				"Invalid currency",
+				response.TransactionInvalidCurrency,
+				field("currency", "oneof", "Supported currencies: GHS, NGN, KES, USD"))
 		default:
-			response.InternalErr(c, "Failed to initialize transaction")
+			response.InternalErr(c, "An error occurred, please try again later")
 		}
 		return
 	}
@@ -96,123 +97,69 @@ func (h *TransactionHandler) Initialize(c *gin.Context) {
 		})
 }
 
-// Verify handles GET /api/v1/transaction/verify/:reference
+// Verify handles GET /transaction/verify/:reference
+// Response data matches Paystack's verify response exactly.
 func (h *TransactionHandler) Verify(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
 	reference := c.Param("reference")
-	if reference == "" {
-		response.BadRequestErr(c, "Reference is required")
-		return
-	}
-
 	tx, err := h.txSvc.Verify(reference, merchant.ID)
 	if err != nil {
 		if errors.Is(err, service.ErrTransactionNotFound) {
-			response.NotFoundErr(c, "Transaction not found")
+			response.Error(c, http.StatusNotFound,
+				"Transaction reference not found",
+				response.TransactionNotFound, nil)
 			return
 		}
-		response.InternalErr(c, "Failed to verify transaction")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Transaction verified",
-		response.TransactionVerified, tx)
-}
-
-// PublicVerify handles GET /api/v1/public/transaction/verify/:reference
-// Called by the React checkout page to poll transaction status during
-// MoMo pay_offline state. No secret key required, the reference is
-// not sensitive and the response only returns safe public fields.
-// The checkout page polls this every 3 seconds after submit_otp returns
-// pay_offline, stopping when status becomes success or failed.
-func (h *TransactionHandler) PublicVerify(c *gin.Context) {
-	reference := c.Param("reference")
-	if reference == "" {
-		response.BadRequestErr(c, "Reference is required")
-		return
-	}
-
-	// Unscoped lookup, we don't have merchant context on public endpoints.
-	// Reference is globally unique so this is safe.
-	tx, err := h.txSvc.GetByReference(reference)
-	if err != nil {
-		response.NotFoundErr(c, "Transaction not found")
-		return
-	}
-
-	// Fetch current charge for flow_status.
 	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
-
-	var chargeData gin.H
-	if charge != nil {
-		chargeData = gin.H{
-			"flow_status": charge.FlowStatus,
-			"status":      charge.Status,
-			"error_code":  charge.ChargeErrorCode,
-			"channel":     charge.Channel,
-		}
-	}
-
-	// Return only what the checkout page needs for polling.
-	// We deliberately exclude sensitive fields like merchant_id,
-	// access_code and callback_url, the checkout page already
-	// has those from the initial transaction fetch on mount.
-	response.Success(c, http.StatusOK, "Transaction verified",
-		response.TransactionVerified, gin.H{
-			"status":    tx.Status,
-			"reference": tx.Reference,
-			"amount":    tx.Amount,
-			"currency":  tx.Currency,
-			"paid_at":   tx.PaidAt,
-			"charge":    chargeData,
-		})
+	response.Success(c, http.StatusOK, "Verification successful",
+		response.TransactionVerified, buildTransactionData(tx, charge))
 }
 
-// Fetch handles GET /api/v1/transaction/:id
+// Fetch handles GET /transaction/:id
 func (h *TransactionHandler) Fetch(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
-	id := c.Param("id")
-
-	tx, err := h.txSvc.Get(id, merchant.ID)
+	tx, err := h.txSvc.Get(c.Param("id"), merchant.ID)
 	if err != nil {
 		if errors.Is(err, service.ErrTransactionNotFound) {
 			response.NotFoundErr(c, "Transaction not found")
 			return
 		}
-		response.InternalErr(c, "Failed to fetch transaction")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Transaction fetched",
-		response.TransactionFetched, tx)
+	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
+	response.Success(c, http.StatusOK, "Transaction retrieved",
+		response.TransactionFetched, buildTransactionData(tx, charge))
 }
 
-// List handles GET /api/v1/transaction
+// List handles GET /transaction
+// Pagination uses Paystack's perPage param (not per_page).
 func (h *TransactionHandler) List(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
-	// Parse pagination query params with sensible defaults.
-	// page=1, perPage=50 means first page of 50 results.
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
+	perPage, _ := strconv.Atoi(c.DefaultQuery("perPage", "50"))
 	status := domain.TransactionStatus(c.Query("status"))
 
-	// Clamp page and perPage to sensible bounds.
-	// Never let a client request 10,000 records in one call.
 	if page < 1 {
 		page = 1
 	}
@@ -222,58 +169,55 @@ func (h *TransactionHandler) List(c *gin.Context) {
 
 	transactions, total, err := h.txSvc.List(merchant.ID, status, page, perPage)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch transactions")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Transactions fetched",
+	var data []gin.H
+	for i := range transactions {
+		charge, _ := h.chargeSvc.FetchChargeByTransactionID(transactions[i].ID)
+		data = append(data, buildTransactionData(&transactions[i], charge))
+	}
+	if data == nil {
+		data = []gin.H{}
+	}
+
+	response.Success(c, http.StatusOK, "Transactions retrieved",
 		response.TransactionListFetched, gin.H{
-			"transactions": transactions,
-			"meta": gin.H{
-				"total":    total,
-				"page":     page,
-				"per_page": perPage,
-				"pages":    (total + int64(perPage) - 1) / int64(perPage),
-			},
+			"data": data,
+			"meta": buildPaystackMeta(total, page, perPage),
 		})
 }
 
-// Refund handles POST /api/v1/transaction/:id/refund
+// Refund handles POST /transaction/:id/refund
 func (h *TransactionHandler) Refund(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
-	id := c.Param("id")
-
-	tx, err := h.txSvc.Refund(id, merchant.ID)
+	tx, err := h.txSvc.Refund(c.Param("id"), merchant.ID)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrTransactionNotFound):
 			response.NotFoundErr(c, "Transaction not found")
 		case errors.Is(err, service.ErrTransactionAlreadyRefunded):
-			response.Error(c, http.StatusConflict, "Transaction already refunded",
-				response.TransactionAlreadyRefunded, []response.ErrorField{})
+			response.ConflictErr(c, "Transaction has already been reversed", response.TransactionAlreadyRefunded)
 		case errors.Is(err, service.ErrTransactionAlreadyVerified):
-			response.Error(c, http.StatusConflict, "Only successful transactions can be refunded",
-				response.TransactionAlreadyVerified, []response.ErrorField{})
+			response.ConflictErr(c, "Only successful transactions can be refunded", response.TransactionAlreadyVerified)
 		default:
-			response.InternalErr(c, "Failed to refund transaction")
+			response.InternalErr(c, "An error occurred, please try again later")
 		}
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Transaction refunded successfully",
-		response.TransactionRefunded, tx)
+	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
+	response.Success(c, http.StatusOK, "Transaction has been reversed",
+		response.TransactionRefunded, buildTransactionData(tx, charge))
 }
 
-// / PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
-// Called by the React checkout page on mount.
-// Returns everything the checkout UI needs to render, amount, currency,
-// merchant branding (name), and the customer email pre-filled on the form.
-// Mirrors Paystack's popup which shows the merchant name and customer email.
+// PublicFetchByAccessCode handles GET /api/v1/public/transaction/:access_code
 func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 	accessCode := c.Param("access_code")
 	if accessCode == "" {
@@ -289,30 +233,26 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 
 	merchant, err := h.txSvc.GetMerchantForTransaction(tx.MerchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to load transaction details")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	// Fetch the current charge for this transaction so the checkout
-	// page knows the current flow_status — critical for MoMo polling.
-	// charge may be nil if no charge attempt has been made yet.
 	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
 
 	var chargeData gin.H
 	if charge != nil {
 		chargeData = gin.H{
-			"id":          charge.ID,
-			"channel":     charge.Channel,
-			"flow_status": charge.FlowStatus,
-			"status":      charge.Status,
+			"flow_status": string(charge.FlowStatus),
+			"status":      string(charge.Status),
 			"error_code":  charge.ChargeErrorCode,
+			"channel":     string(charge.Channel),
 		}
 	}
 
 	data := gin.H{
 		"amount":       tx.Amount,
-		"currency":     tx.Currency,
-		"status":       tx.Status,
+		"currency":     string(tx.Currency),
+		"status":       string(tx.Status),
 		"reference":    tx.Reference,
 		"callback_url": tx.CallbackURL,
 		"access_code":  tx.AccessCode,
@@ -328,37 +268,54 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 		},
 	}
 
-	// Return a meaningful message based on the current transaction status.
-	// The React checkout app uses this to decide what screen to show —
-	// payment form, success screen, failure screen, or already-paid screen.
 	switch tx.Status {
 	case domain.TransactionSuccess:
-		// Payment already completed, don't show the payment form again.
-		// Return 200 so the checkout app can render a "already paid" screen
-		// instead of an error page. The data is still included so the app
-		// can show the amount and merchant name in the confirmation.
-		response.Success(c, http.StatusOK,
-			"Payment already completed", response.TransactionVerified, data)
-
+		response.Success(c, http.StatusOK, "Payment already completed", response.TransactionVerified, data)
 	case domain.TransactionFailed:
-		// Previous charge attempt failed, the customer can try again
-		// by initializing a new transaction. We return 200 here too
-		// so the checkout app can show a proper "payment failed, please
-		// try again" screen rather than a generic error.
-		response.Success(c, http.StatusOK,
-			"Payment was not successful", response.TransactionVerified, data)
-
+		response.Success(c, http.StatusOK, "Payment was not successful", response.TransactionVerified, data)
 	case domain.TransactionAbandoned:
-		response.Success(c, http.StatusOK,
-			"This payment link has expired", response.TransactionVerified, data)
-
+		response.Success(c, http.StatusOK, "This payment link has expired", response.TransactionVerified, data)
 	case domain.TransactionReversed:
-		response.Success(c, http.StatusOK,
-			"This payment has been refunded", response.TransactionVerified, data)
-
+		response.Success(c, http.StatusOK, "This payment has been refunded", response.TransactionVerified, data)
 	default:
-		// Pending, normal flow, show the payment form.
-		response.Success(c, http.StatusOK,
-			"Transaction fetched", response.TransactionFetched, data)
+		response.Success(c, http.StatusOK, "Transaction fetched", response.TransactionFetched, data)
 	}
+}
+
+// PublicVerify handles GET /api/v1/public/transaction/verify/:reference
+// Used by the checkout page to poll transaction status during MoMo pay_offline.
+func (h *TransactionHandler) PublicVerify(c *gin.Context) {
+	reference := c.Param("reference")
+	if reference == "" {
+		response.BadRequestErr(c, "Reference is required")
+		return
+	}
+
+	tx, err := h.txSvc.GetByReference(reference)
+	if err != nil {
+		response.NotFoundErr(c, "Transaction not found")
+		return
+	}
+
+	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
+
+	var chargeData gin.H
+	if charge != nil {
+		chargeData = gin.H{
+			"flow_status": string(charge.FlowStatus),
+			"status":      string(charge.Status),
+			"error_code":  charge.ChargeErrorCode,
+			"channel":     string(charge.Channel),
+		}
+	}
+
+	response.Success(c, http.StatusOK, "Verification successful",
+		response.TransactionVerified, gin.H{
+			"status":    string(tx.Status),
+			"reference": tx.Reference,
+			"amount":    tx.Amount,
+			"currency":  string(tx.Currency),
+			"paid_at":   tx.PaidAt,
+			"charge":    chargeData,
+		})
 }

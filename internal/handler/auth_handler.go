@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -41,26 +41,19 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrEmailTaken) {
-			response.Error(c, http.StatusConflict, "Email is already registered",
-				response.AuthEmailTaken, []response.ErrorField{
-					{Field: "email", Message: "This email is already in use"},
-				})
+			response.Error(c, http.StatusConflict,
+				"Email already registered",
+				response.AuthEmailTaken,
+				field("email", "unique", "This email is already in use"))
 			return
 		}
-		response.InternalErr(c, "Failed to create account")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	// Set HttpOnly cookies, the dashboard reads auth state from these,
-	// never from localStorage. This is the more secure approach.
-	middleware.SetAuthCookies(c,
-		out.Tokens.AccessToken,
-		out.Tokens.RefreshToken,
-		out.Tokens.AccessExpiry,
-		h.isProd,
-	)
+	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, h.isProd)
 
-	response.Success(c, http.StatusCreated, "Account created successfully",
+	response.Success(c, http.StatusCreated, "Account created",
 		response.AuthRegisterSuccess, gin.H{
 			"merchant": gin.H{
 				"id":            out.Merchant.ID,
@@ -68,9 +61,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 				"email":         out.Merchant.Email,
 				"public_key":    out.Merchant.PublicKey,
 			},
-			// We still return the access token in the body so the Go/Python/JS/Rust
-			// SDKs can use it without cookies. Dashboard uses the cookie.
-			"token":         out.Tokens.AccessToken,
+			"access_token":  out.Tokens.AccessToken,
 			"access_expiry": out.Tokens.AccessExpiry,
 		})
 }
@@ -92,22 +83,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Password: req.Password,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidCredentials) ||
-			errors.Is(err, service.ErrMerchantInactive) {
-			response.Error(c, http.StatusUnauthorized, "Invalid email or password",
-				response.AuthInvalidCredentials, []response.ErrorField{})
+		if errors.Is(err, service.ErrInvalidCredentials) || errors.Is(err, service.ErrMerchantInactive) {
+			response.Error(c, http.StatusUnauthorized,
+				"Wrong email or password",
+				response.AuthInvalidCredentials, nil)
 			return
 		}
-		response.InternalErr(c, "Failed to login")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	middleware.SetAuthCookies(c,
-		out.Tokens.AccessToken,
-		out.Tokens.RefreshToken,
-		out.Tokens.AccessExpiry,
-		h.isProd,
-	)
+	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, h.isProd)
 
 	response.Success(c, http.StatusOK, "Login successful",
 		response.AuthLoginSuccess, gin.H{
@@ -117,16 +103,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 				"email":         out.Merchant.Email,
 				"public_key":    out.Merchant.PublicKey,
 			},
-			"token":         out.Tokens.AccessToken,
+			"access_token":  out.Tokens.AccessToken,
 			"access_expiry": out.Tokens.AccessExpiry,
 		})
 }
 
-// Refresh handles POST /api/v1/auth/refresh
-// The browser sends the payfake_refresh cookie automatically.
-// We validate it, issue a new token pair, and set fresh cookies.
-// The old refresh token is invalidated by rotation, a rotated token
-// cannot be used again because we've replaced it with a new one.
 func (h *AuthHandler) Refresh(c *gin.Context) {
 	refreshToken, err := c.Cookie("payfake_refresh")
 	if err != nil || refreshToken == "" {
@@ -136,43 +117,31 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	tokens, err := h.authSvc.RefreshTokens(refreshToken)
 	if err != nil {
-		// Clear cookies on refresh failure, the session is invalid.
 		middleware.ClearAuthCookies(c)
 		if errors.Is(err, service.ErrTokenExpired) {
-			response.Error(c, http.StatusUnauthorized, "Session expired, please login again",
-				response.AuthTokenExpired, []response.ErrorField{})
+			response.Error(c, http.StatusUnauthorized,
+				"Session expired, please login again",
+				response.AuthTokenExpired, nil)
 			return
 		}
 		response.UnauthorizedErr(c, "Invalid refresh token")
 		return
 	}
 
-	middleware.SetAuthCookies(c,
-		tokens.AccessToken,
-		tokens.RefreshToken,
-		tokens.AccessExpiry,
-		h.isProd,
-	)
+	middleware.SetAuthCookies(c, tokens.AccessToken, tokens.RefreshToken, tokens.AccessExpiry, h.isProd)
 
 	response.Success(c, http.StatusOK, "Token refreshed",
-		response.AuthLoginSuccess, gin.H{
+		response.AuthRefreshSuccess, gin.H{
 			"access_token":  tokens.AccessToken,
 			"access_expiry": tokens.AccessExpiry,
 		})
 }
 
-// Logout handles POST /api/v1/auth/logout
-// Clears both cookies, the browser discards them immediately.
 func (h *AuthHandler) Logout(c *gin.Context) {
 	middleware.ClearAuthCookies(c)
-	response.Success(c, http.StatusOK, "Logged out successfully",
-		response.AuthLogoutSuccess, nil)
+	response.Success(c, http.StatusOK, "Logged out successfully", response.AuthLogoutSuccess, nil)
 }
 
-// Me handles GET /api/v1/auth/me
-// Called on dashboard mount to hydrate the current merchant's profile.
-// If the access cookie is valid this returns the merchant, otherwise
-// the dashboard knows to redirect to login.
 func (h *AuthHandler) Me(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -182,7 +151,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 
 	merchant, err := h.authSvc.GetMerchant(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch profile")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
@@ -201,17 +170,17 @@ func (h *AuthHandler) Me(c *gin.Context) {
 func (h *AuthHandler) GetKeys(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
-		response.UnauthorizedErr(c, "Invalid or expired token")
+		response.UnauthorizedErr(c, "Invalid or expired session")
 		return
 	}
 
 	merchant, err := h.authSvc.GetMerchant(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch keys")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Keys fetched successfully",
+	response.Success(c, http.StatusOK, "Keys retrieved",
 		response.AuthKeysFetched, gin.H{
 			"public_key": merchant.PublicKey,
 			"secret_key": merchant.SecretKey,
@@ -221,17 +190,17 @@ func (h *AuthHandler) GetKeys(c *gin.Context) {
 func (h *AuthHandler) RegenerateKeys(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
-		response.UnauthorizedErr(c, "Invalid or expired token")
+		response.UnauthorizedErr(c, "Invalid or expired session")
 		return
 	}
 
 	publicKey, secretKey, err := h.authSvc.RegenerateKeys(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to regenerate keys")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Keys regenerated successfully",
+	response.Success(c, http.StatusOK, "Keys updated",
 		response.AuthKeyRegenerated, gin.H{
 			"public_key": publicKey,
 			"secret_key": secretKey,

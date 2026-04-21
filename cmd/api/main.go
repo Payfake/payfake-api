@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/config"
-	"github.com/GordenArcher/payfake/internal/database"
-	"github.com/GordenArcher/payfake/internal/router"
+	"github.com/payfake/payfake-api/internal/config"
+	"github.com/payfake/payfake-api/internal/database"
+	"github.com/payfake/payfake-api/internal/router"
 )
 
 func main() {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
+	"github.com/payfake/payfake-api/internal/domain"
 	"gorm.io/gorm"
 )
 

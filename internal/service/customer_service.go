@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/repository"
-	"github.com/GordenArcher/payfake/pkg/uid"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/repository"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"gorm.io/gorm"
 )
 

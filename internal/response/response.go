@@ -1,129 +1,107 @@
 package response
 
 import (
-	"time"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Metadata is included in every response, success or error.
-// timestamp tells the client exactly when the response was generated (UTC).
-// request_id is injected by the request_id middleware and ties this response
-// back to a specific request in the introspection logs.
-type Metadata struct {
-	Timestamp string `json:"timestamp"`
-	RequestID string `json:"request_id"`
+// PaystackSuccess is the exact envelope Paystack returns on success.
+// status is always boolean true, matches https://paystack.com/docs/api exactly.
+type PaystackSuccess struct {
+	Status  bool   `json:"status"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
-// SuccessResponse is the envelope for all successful responses.
-// data holds the actual payload, its shape varies per endpoint.
-// We use any instead of interface{}, they are identical under the hood
-// but any is the idiomatic choice since Go 1.18.
-type SuccessResponse struct {
-	Status   string   `json:"status"`
-	Message  string   `json:"message"`
-	Data     any      `json:"data"`
-	Metadata Metadata `json:"metadata"`
-	Code     Code     `json:"code"`
+// PaystackError is the exact envelope Paystack returns on failure.
+// status is always boolean false.
+// errors is a map of field name to array of rule violations —
+// matches Paystack's validation error shape exactly.
+type PaystackError struct {
+	Status  bool                          `json:"status"`
+	Message string                        `json:"message"`
+	Errors  map[string][]ValidationDetail `json:"errors,omitempty"`
 }
 
-// ErrorField represents a single validation or domain error.
-// field points to the exact request field that caused the problem.
-// message is a human-readable explanation of what went wrong.
-// Returning an array of these means we can surface ALL validation
-// errors in one response instead of making the client fix one at a time.
-type ErrorField struct {
-	Field   string `json:"field"`
+// ValidationDetail is a single validation rule violation.
+// Matches Paystack's { "rule": "required", "message": "Email is required" } shape.
+type ValidationDetail struct {
+	Rule    string `json:"rule"`
 	Message string `json:"message"`
 }
 
-// ErrorResponse is the envelope for all failed responses.
-// errors is always an array, even for single errors, so the client
-// can handle the shape consistently without type-checking.
-// data is intentionally absent here. Success and error shapes are
-// mutually exclusive, we never mix them in the same response.
-type ErrorResponse struct {
-	Status   string       `json:"status"`
-	Message  string       `json:"message"`
-	Errors   []ErrorField `json:"errors"`
-	Metadata Metadata     `json:"metadata"`
-	Code     Code         `json:"code"`
-}
-
-// getMetadata builds the metadata block for any response.
-// It pulls request_id from the Gin context where the request_id
-// middleware stored it. If somehow it's missing we degrade gracefully
-// with an empty string rather than panicking.
-func getMetadata(c *gin.Context) Metadata {
-	requestID, _ := c.Get("request_id")
-	rid, _ := requestID.(string)
-
-	return Metadata{
-		// RFC3339 is the standard for API timestamps, unambiguous and parseable
-		// by every major language without extra configuration.
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		RequestID: rid,
-	}
-}
-
-// Success writes a successful JSON response with the agreed envelope.
-// httpStatus is passed in explicitly because success isn't always 200,
-// creates are 201, accepted async operations might be 202 etc.
+// Success writes a boolean-true Paystack-compatible success response.
+// The Payfake response code travels in the X-Payfake-Code header so the
+// dashboard and control panel can read it without the body deviating from
+// the Paystack envelope shape.
 func Success(c *gin.Context, httpStatus int, message string, code Code, data any) {
-	c.JSON(httpStatus, SuccessResponse{
-		Status:   "success",
-		Message:  message,
-		Data:     data,
-		Metadata: getMetadata(c),
-		Code:     code,
+	c.Header("X-Payfake-Code", string(code))
+	c.Header("X-Request-ID", getRequestID(c))
+	c.JSON(httpStatus, PaystackSuccess{
+		Status:  true,
+		Message: message,
+		Data:    data,
 	})
 }
 
-// Error writes a failed JSON response with the agreed envelope.
-// errors is always passed as a slice, callers build the slice before
-// calling this so the logic stays clean here.
-func Error(c *gin.Context, httpStatus int, message string, code Code, errors []ErrorField) {
-	c.JSON(httpStatus, ErrorResponse{
-		Status:   "error",
-		Message:  message,
-		Errors:   errors,
-		Metadata: getMetadata(c),
-		Code:     code,
-	})
+// Error writes a boolean-false Paystack-compatible error response.
+// fieldErrors is optional, pass nil for errors with no field context.
+func Error(c *gin.Context, httpStatus int, message string, code Code, fieldErrors map[string][]ValidationDetail) {
+	c.Header("X-Payfake-Code", string(code))
+	c.Header("X-Request-ID", getRequestID(c))
+	resp := PaystackError{
+		Status:  false,
+		Message: message,
+	}
+	if len(fieldErrors) > 0 {
+		resp.Errors = fieldErrors
+	}
+	c.JSON(httpStatus, resp)
 }
 
-// ValidationErr is the shorthand for 422 validation failures.
-// 422 is more semantically correct than 400 for validation,
-// the request was well-formed but the content failed our rules.
-func ValidationErr(c *gin.Context, errors []ErrorField) {
-	Error(c, 422, "Validation failed", ValidationError, errors)
+// ValidationErr writes a 400 validation failure.
+// fields maps each field name to its rule violations —
+// matches Paystack's { "errors": { "email": [{ "rule": "required", "message": "..." }] } }
+func ValidationErr(c *gin.Context, fields map[string][]ValidationDetail) {
+	Error(c, http.StatusBadRequest, "Validation error has occurred", ValidationError, fields)
 }
 
-// UnauthorizedErr is the shorthand for 401 auth failures.
-// message is kept flexible because the reason varies,
-// missing key, expired token, invalid signature etc.
+// UnauthorizedErr writes a 401.
 func UnauthorizedErr(c *gin.Context, message string) {
-	Error(c, 401, message, AuthUnauthorized, []ErrorField{})
+	Error(c, http.StatusUnauthorized, message, AuthUnauthorized, nil)
 }
 
-// NotFoundErr is the shorthand for 404 responses.
-// We pass an empty errors slice here, there's no field to point to,
-// the resource simply doesn't exist.
+// NotFoundErr writes a 404.
 func NotFoundErr(c *gin.Context, message string) {
-	Error(c, 404, message, NotFound, []ErrorField{})
+	Error(c, http.StatusNotFound, message, NotFound, nil)
 }
 
-// InternalErr is the shorthand for 500 responses.
-// message should always be generic here, never expose internal
-// error details like stack traces or DB errors to the client.
-// The real error should be logged server-side before calling this.
+// InternalErr writes a 500.
+// message is always generic, never exposes internal error details to the client.
 func InternalErr(c *gin.Context, message string) {
-	Error(c, 500, message, InternalError, []ErrorField{})
+	Error(c, http.StatusInternalServerError, message, InternalError, nil)
 }
 
-// BadRequestErr is the shorthand for 400 responses.
-// Used when the request itself is malformed, wrong content type,
-// unparseable JSON body, missing required headers etc.
+// BadRequestErr writes a 400 without field-level errors.
 func BadRequestErr(c *gin.Context, message string) {
-	Error(c, 400, message, BadRequest, []ErrorField{})
+	Error(c, http.StatusBadRequest, message, BadRequest, nil)
+}
+
+// ConflictErr writes a 409.
+func ConflictErr(c *gin.Context, message string, code Code) {
+	Error(c, http.StatusConflict, message, code, nil)
+}
+
+// UnprocessableErr writes a 422.
+func UnprocessableErr(c *gin.Context, message string, code Code, fields map[string][]ValidationDetail) {
+	Error(c, http.StatusUnprocessableEntity, message, code, fields)
+}
+
+func getRequestID(c *gin.Context) string {
+	id, _ := c.Get("request_id")
+	if s, ok := id.(string); ok {
+		return s
+	}
+	return ""
 }

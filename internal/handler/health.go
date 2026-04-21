@@ -3,8 +3,8 @@ package handler
 import (
 	"net/http"
 
-	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/response"
 )
 
 // HealthCheck is a simple liveness probe.

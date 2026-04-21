@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/repository"
-	"github.com/GordenArcher/payfake/pkg/keygen"
-	"github.com/GordenArcher/payfake/pkg/uid"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/repository"
+	"github.com/payfake/payfake-api/pkg/keygen"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )

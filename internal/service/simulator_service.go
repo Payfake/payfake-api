@@ -4,8 +4,8 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/repository"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/repository"
 )
 
 // SimulationResult is what the simulator returns after resolving

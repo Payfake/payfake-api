@@ -1,4 +1,4 @@
-module github.com/GordenArcher/payfake
+module github.com/payfake/payfake-api
 
 go 1.25.1
 

@@ -1,16 +1,9 @@
 package response
 
-// Code is a custom string type for all API response codes.
-// Using a named type instead of raw strings means the compiler
-// catches typos at build time, you can't accidentally pass
-// an arbitrary string where a Code is expected.
 type Code string
 
 const (
-
 	// Auth
-
-	// Returned after a merchant successfully creates an account.
 	AuthRegisterSuccess Code = "AUTH_REGISTER_SUCCESS"
 	// Returned after a merchant successfully logs in and receives a JWT.
 	AuthLoginSuccess Code = "AUTH_LOGIN_SUCCESS"
@@ -24,26 +17,16 @@ const (
 	// Auth errors
 	// Wrong email or password on login.
 	AuthInvalidCredentials Code = "AUTH_INVALID_CREDENTIALS"
-	// Request made to a protected route without a valid token or key.
-	AuthUnauthorized Code = "AUTH_UNAUTHORIZED"
-	// JWT has passed its expiry time, merchant must log in again.
-	AuthTokenExpired Code = "AUTH_TOKEN_EXPIRED"
-	// JWT signature is invalid or the token is malformed.
-	AuthTokenInvalid Code = "AUTH_TOKEN_INVALID"
-	// Registration attempted with an email that already exists.
-	AuthEmailTaken Code = "AUTH_EMAIL_TAKEN"
-	// Secret key provided doesn't match any merchant in the system.
-	AuthMerchantNotFound Code = "AUTH_MERCHANT_NOT_FOUND"
+	AuthUnauthorized       Code = "AUTH_UNAUTHORIZED"
+	AuthTokenExpired       Code = "AUTH_TOKEN_EXPIRED"
+	AuthTokenInvalid       Code = "AUTH_TOKEN_INVALID"
+	AuthEmailTaken         Code = "AUTH_EMAIL_TAKEN"
+	AuthMerchantNotFound   Code = "AUTH_MERCHANT_NOT_FOUND"
 
 	// Transaction
-
-	// Returned after a transaction is created and an access_code is issued.
 	TransactionInitialized Code = "TRANSACTION_INITIALIZED"
-	// Returned when a transaction reference is looked up and found.
-	TransactionVerified Code = "TRANSACTION_VERIFIED"
-	// Returned when a single transaction is fetched by ID.
-	TransactionFetched Code = "TRANSACTION_FETCHED"
-	// Returned when a paginated list of transactions is fetched.
+	TransactionVerified    Code = "TRANSACTION_VERIFIED"
+	TransactionFetched     Code = "TRANSACTION_FETCHED"
 	TransactionListFetched Code = "TRANSACTION_LIST_FETCHED"
 	// Returned after a transaction has been successfully reversed/refunded.
 	TransactionRefunded Code = "TRANSACTION_REFUNDED"
@@ -115,23 +98,13 @@ const (
 	ChargeBankTransferFailed Code = "CHARGE_BANK_TRANSFER_FAILED"
 
 	// Customer
-
-	// New customer record created under the merchant's account.
-	CustomerCreated Code = "CUSTOMER_CREATED"
-	// Single customer fetched by code or ID.
-	CustomerFetched Code = "CUSTOMER_FETCHED"
-	// Paginated list of merchant's customers fetched.
-	CustomerListFetched Code = "CUSTOMER_LIST_FETCHED"
-	// Customer record updated successfully.
-	CustomerUpdated Code = "CUSTOMER_UPDATED"
-
-	// Customer errors
-	// No customer found matching the given code or ID under this merchant.
-	CustomerNotFound Code = "CUSTOMER_NOT_FOUND"
-	// A customer with this email already exists under this merchant.
-	CustomerEmailTaken Code = "CUSTOMER_EMAIL_TAKEN"
-	// Phone number is not a valid Ghanaian or African format.
+	CustomerCreated      Code = "CUSTOMER_CREATED"
+	CustomerFetched      Code = "CUSTOMER_FETCHED"
+	CustomerListFetched  Code = "CUSTOMER_LIST_FETCHED"
+	CustomerUpdated      Code = "CUSTOMER_UPDATED"
+	CustomerEmailTaken   Code = "CUSTOMER_EMAIL_TAKEN"
 	CustomerInvalidPhone Code = "CUSTOMER_INVALID_PHONE"
+	CustomerNotFound     Code = "CUSTOMER_NOT_FOUND"
 
 	// Control (Payfake-specific)
 	// These codes have no Paystack equivalent, they power the simulator layer.

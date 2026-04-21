@@ -3,10 +3,10 @@ package handler
 import (
 	"net/http"
 
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -21,8 +21,6 @@ func NewStatsHandler(db *gorm.DB, statsSvc *service.StatsService, authSvc *servi
 }
 
 // GetStats handles GET /api/v1/control/stats
-// Powers the dashboard overview page, returns all aggregated numbers
-// in one call so the overview doesn't need to fire multiple requests.
 func (h *StatsHandler) GetStats(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -32,11 +30,11 @@ func (h *StatsHandler) GetStats(c *gin.Context) {
 
 	stats, err := h.statsSvc.GetStats(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch stats")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Stats fetched",
+	response.Success(c, http.StatusOK, "Stats retrieved",
 		response.StatsFetched, gin.H{
 			"transactions": gin.H{
 				"total":        stats.TotalTransactions,

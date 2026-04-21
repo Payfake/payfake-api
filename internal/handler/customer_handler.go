@@ -5,11 +5,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -31,11 +31,11 @@ type createCustomerRequest struct {
 	Metadata  domain.JSON `json:"metadata"`
 }
 
-// Create handles POST /api/v1/customer
+// Create handles POST /customer
 func (h *CustomerHandler) Create(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
@@ -53,34 +53,32 @@ func (h *CustomerHandler) Create(c *gin.Context) {
 		Phone:      req.Phone,
 		Metadata:   req.Metadata,
 	})
-
 	if err != nil {
 		if errors.Is(err, service.ErrCustomerEmailTaken) {
-			response.Error(c, http.StatusConflict, "Customer email already exists",
-				response.CustomerEmailTaken, []response.ErrorField{
-					{Field: "email", Message: "A customer with this email already exists"},
-				})
+			response.Error(c, http.StatusConflict,
+				"Customer with that email already exists",
+				response.CustomerEmailTaken,
+				field("email", "unique", "A customer with this email already exists"))
 			return
 		}
-		response.InternalErr(c, "Failed to create customer")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusCreated, "Customer created",
-		response.CustomerCreated, customer)
+	response.Success(c, http.StatusOK, "Customer created",
+		response.CustomerCreated, buildCustomerData(customer))
 }
 
-// List handles GET /api/v1/customer
+// List handles GET /customer
 func (h *CustomerHandler) List(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
-
+	perPage, _ := strconv.Atoi(c.DefaultQuery("perPage", "50"))
 	if page < 1 {
 		page = 1
 	}
@@ -90,44 +88,45 @@ func (h *CustomerHandler) List(c *gin.Context) {
 
 	customers, total, err := h.customerSvc.List(merchant.ID, page, perPage)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch customers")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Customers fetched",
+	var data []gin.H
+	for i := range customers {
+		data = append(data, buildCustomerData(&customers[i]))
+	}
+	if data == nil {
+		data = []gin.H{}
+	}
+
+	response.Success(c, http.StatusOK, "Customers retrieved",
 		response.CustomerListFetched, gin.H{
-			"customers": customers,
-			"meta": gin.H{
-				"total":    total,
-				"page":     page,
-				"per_page": perPage,
-				"pages":    (total + int64(perPage) - 1) / int64(perPage),
-			},
+			"data": data,
+			"meta": buildPaystackMeta(total, page, perPage),
 		})
 }
 
-// Fetch handles GET /api/v1/customer/:code
+// Fetch handles GET /customer/:code
 func (h *CustomerHandler) Fetch(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
-	code := c.Param("code")
-
-	customer, err := h.customerSvc.Get(code, merchant.ID)
+	customer, err := h.customerSvc.Get(c.Param("code"), merchant.ID)
 	if err != nil {
 		if errors.Is(err, service.ErrCustomerNotFound) {
 			response.NotFoundErr(c, "Customer not found")
 			return
 		}
-		response.InternalErr(c, "Failed to fetch customer")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Customer fetched",
-		response.CustomerFetched, customer)
+	response.Success(c, http.StatusOK, "Customer retrieved",
+		response.CustomerFetched, buildCustomerData(customer))
 }
 
 type updateCustomerRequest struct {
@@ -137,15 +136,13 @@ type updateCustomerRequest struct {
 	Metadata  domain.JSON `json:"metadata"`
 }
 
-// Update handles PUT /api/v1/customer/:code
+// Update handles PUT /customer/:code
 func (h *CustomerHandler) Update(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
-
-	code := c.Param("code")
 
 	var req updateCustomerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -153,50 +150,45 @@ func (h *CustomerHandler) Update(c *gin.Context) {
 		return
 	}
 
-	customer, err := h.customerSvc.Update(code, merchant.ID, service.UpdateCustomerInput{
+	customer, err := h.customerSvc.Update(c.Param("code"), merchant.ID, service.UpdateCustomerInput{
 		FirstName: req.FirstName,
 		LastName:  req.LastName,
 		Phone:     req.Phone,
 		Metadata:  req.Metadata,
 	})
-
 	if err != nil {
 		if errors.Is(err, service.ErrCustomerNotFound) {
 			response.NotFoundErr(c, "Customer not found")
 			return
 		}
-		response.InternalErr(c, "Failed to update customer")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
 	response.Success(c, http.StatusOK, "Customer updated",
-		response.CustomerUpdated, customer)
+		response.CustomerUpdated, buildCustomerData(customer))
 }
 
-// Transactions handles GET /api/v1/customer/:code/transactions
+// Transactions handles GET /customer/:code/transactions
 func (h *CustomerHandler) Transactions(c *gin.Context) {
 	merchant, ok := middleware.GetMerchant(c)
 	if !ok {
-		response.UnauthorizedErr(c, "Unauthorized")
+		response.UnauthorizedErr(c, "Invalid key. Please ensure you are using the correct key.")
 		return
 	}
 
-	code := c.Param("code")
-
-	// Verify the customer exists under this merchant before fetching their transactions.
-	customer, err := h.customerSvc.Get(code, merchant.ID)
+	customer, err := h.customerSvc.Get(c.Param("code"), merchant.ID)
 	if err != nil {
 		if errors.Is(err, service.ErrCustomerNotFound) {
 			response.NotFoundErr(c, "Customer not found")
 			return
 		}
-		response.InternalErr(c, "Failed to fetch customer")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	perPage, _ := strconv.Atoi(c.DefaultQuery("per_page", "50"))
-
+	perPage, _ := strconv.Atoi(c.DefaultQuery("perPage", "50"))
 	if page < 1 {
 		page = 1
 	}
@@ -206,18 +198,21 @@ func (h *CustomerHandler) Transactions(c *gin.Context) {
 
 	transactions, total, err := h.txSvc.ListByCustomer(customer.ID, merchant.ID, page, perPage)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch transactions")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Customer transactions fetched",
+	var data []gin.H
+	for i := range transactions {
+		data = append(data, buildTransactionData(&transactions[i], nil))
+	}
+	if data == nil {
+		data = []gin.H{}
+	}
+
+	response.Success(c, http.StatusOK, "Customer transactions retrieved",
 		response.TransactionListFetched, gin.H{
-			"transactions": transactions,
-			"meta": gin.H{
-				"total":    total,
-				"page":     page,
-				"per_page": perPage,
-				"pages":    (total + int64(perPage) - 1) / int64(perPage),
-			},
+			"data": data,
+			"meta": buildPaystackMeta(total, page, perPage),
 		})
 }

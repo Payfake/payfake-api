@@ -3,8 +3,8 @@ package database
 import (
 	"log"
 
-	"github.com/GordenArcher/payfake/internal/config"
-	"github.com/GordenArcher/payfake/internal/domain"
+	"github.com/payfake/payfake-api/internal/config"
+	"github.com/payfake/payfake-api/internal/domain"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"

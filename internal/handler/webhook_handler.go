@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
-	pfcrypto "github.com/GordenArcher/payfake/pkg/crypto"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
+	pfcrypto "github.com/payfake/payfake-api/pkg/crypto"
 	"gorm.io/gorm"
 )
 
@@ -26,47 +26,30 @@ func NewWebhookHandler(db *gorm.DB, merchantSvc *service.MerchantService, authSv
 	return &WebhookHandler{db: db, merchantSvc: merchantSvc, authSvc: authSvc}
 }
 
+func (h *WebhookHandler) GetWebhookURL(c *gin.Context) {
+	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
+	if !ok {
+		response.UnauthorizedErr(c, "Invalid or expired session")
+		return
+	}
+
+	merchant, err := h.merchantSvc.GetProfile(merchantID)
+	if err != nil {
+		response.InternalErr(c, "An error occurred, please try again later")
+		return
+	}
+
+	response.Success(c, http.StatusOK, "Webhook config retrieved",
+		response.MerchantFetched, gin.H{
+			"webhook_url": merchant.WebhookURL,
+			"is_set":      merchant.WebhookURL != "",
+		})
+}
+
 type updateWebhookURLRequest struct {
 	WebhookURL string `json:"webhook_url" binding:"required,url"`
 }
 
-var (
-	webhookTestMu      sync.Mutex
-	webhookTestBuckets = make(map[string]*webhookTestBucket)
-)
-
-type webhookTestBucket struct {
-	count       int
-	windowStart time.Time
-}
-
-// webhookTestRateLimit returns true if the merchant is within the
-// 5-per-minute limit, false if they've exceeded it.
-func webhookTestRateLimit(merchantID string) bool {
-	webhookTestMu.Lock()
-	defer webhookTestMu.Unlock()
-
-	b, ok := webhookTestBuckets[merchantID]
-	if !ok {
-		webhookTestBuckets[merchantID] = &webhookTestBucket{
-			count:       1,
-			windowStart: time.Now(),
-		}
-		return true
-	}
-
-	if time.Since(b.windowStart) >= time.Minute {
-		b.count = 1
-		b.windowStart = time.Now()
-		return true
-	}
-
-	b.count++
-	return b.count <= 5
-}
-
-// UpdateWebhookURL handles POST /api/v1/merchant/webhook
-// Sets the merchant's webhook URL from the dashboard.
 func (h *WebhookHandler) UpdateWebhookURL(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -82,7 +65,7 @@ func (h *WebhookHandler) UpdateWebhookURL(c *gin.Context) {
 
 	merchant, err := h.merchantSvc.UpdateProfile(merchantID, "", req.WebhookURL)
 	if err != nil {
-		response.InternalErr(c, "Failed to update webhook URL")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
@@ -92,30 +75,34 @@ func (h *WebhookHandler) UpdateWebhookURL(c *gin.Context) {
 		})
 }
 
-// GetWebhookURL handles GET /api/v1/merchant/webhook
-func (h *WebhookHandler) GetWebhookURL(c *gin.Context) {
-	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
-	if !ok {
-		response.UnauthorizedErr(c, "Invalid or expired session")
-		return
-	}
+var (
+	webhookTestMu      sync.Mutex
+	webhookTestBuckets = make(map[string]*webhookTestBucket)
+)
 
-	merchant, err := h.merchantSvc.GetProfile(merchantID)
-	if err != nil {
-		response.InternalErr(c, "Failed to fetch webhook config")
-		return
-	}
-
-	response.Success(c, http.StatusOK, "Webhook config fetched",
-		response.MerchantFetched, gin.H{
-			"webhook_url": merchant.WebhookURL,
-			"is_set":      merchant.WebhookURL != "",
-		})
+type webhookTestBucket struct {
+	count       int
+	windowStart time.Time
 }
 
-// TestWebhook handles POST /api/v1/merchant/webhook/test
-// Fires a test webhook to the merchant's configured URL so they can
-// verify their endpoint is reachable and their signature verification works.
+func webhookTestRateLimit(merchantID string) bool {
+	webhookTestMu.Lock()
+	defer webhookTestMu.Unlock()
+
+	b, ok := webhookTestBuckets[merchantID]
+	if !ok {
+		webhookTestBuckets[merchantID] = &webhookTestBucket{count: 1, windowStart: time.Now()}
+		return true
+	}
+	if time.Since(b.windowStart) >= time.Minute {
+		b.count = 1
+		b.windowStart = time.Now()
+		return true
+	}
+	b.count++
+	return b.count <= 5
+}
+
 func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -123,41 +110,40 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 		return
 	}
 
-	// Rate limit — 5 test webhooks per minute per merchant.
-	// Stored in a package-level sync.Map keyed by merchant ID.
 	if !webhookTestRateLimit(merchantID) {
 		response.Error(c, http.StatusTooManyRequests,
-			"Too many test webhooks — wait a minute before trying again",
-			response.RateLimitExceeded, []response.ErrorField{})
+			"Too many test requests, please wait a minute",
+			response.RateLimitExceeded, nil)
 		return
 	}
 
 	merchant, err := h.merchantSvc.GetProfile(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch merchant")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
 	if merchant.WebhookURL == "" {
 		response.Error(c, http.StatusUnprocessableEntity,
 			"No webhook URL configured",
-			response.WebhookNotFound, []response.ErrorField{
-				{Field: "webhook_url", Message: "Configure a webhook URL first"},
-			})
+			response.WebhookNotFound,
+			field("webhook_url", "required", "Configure a webhook URL first"))
 		return
 	}
 
 	payload := map[string]any{
 		"event": "charge.success",
 		"data": map[string]any{
-			"id":         "TXN_TEST_WEBHOOK",
-			"reference":  fmt.Sprintf("test-webhook-%d", time.Now().Unix()),
-			"amount":     10000,
-			"currency":   "GHS",
-			"status":     "success",
-			"channel":    "card",
-			"paid_at":    time.Now().Format(time.RFC3339),
-			"created_at": time.Now().Format(time.RFC3339),
+			"id":               "TXN_TEST_WEBHOOK",
+			"domain":           "test",
+			"reference":        fmt.Sprintf("test-webhook-%d", time.Now().Unix()),
+			"amount":           10000,
+			"currency":         "GHS",
+			"status":           "success",
+			"channel":          "card",
+			"gateway_response": "Approved",
+			"paid_at":          time.Now().Format(time.RFC3339),
+			"created_at":       time.Now().Format(time.RFC3339),
 			"customer": map[string]any{
 				"email": "test@payfake.dev",
 			},
@@ -183,7 +169,7 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 		result["success"] = false
 		result["error"] = err.Error()
 		result["status_code"] = 0
-		response.Success(c, http.StatusOK, "Test webhook delivery failed",
+		response.Success(c, http.StatusOK, "Webhook delivery failed",
 			response.WebhookDeliveryFailed, result)
 		return
 	}

@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/repository"
-	"github.com/GordenArcher/payfake/pkg/crypto"
-	"github.com/GordenArcher/payfake/pkg/uid"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/repository"
+	"github.com/payfake/payfake-api/pkg/crypto"
+	"github.com/payfake/payfake-api/pkg/uid"
 )
 
 type WebhookService struct {

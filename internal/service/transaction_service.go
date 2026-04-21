@@ -7,9 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/internal/repository"
-	"github.com/GordenArcher/payfake/pkg/uid"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/internal/repository"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"gorm.io/gorm"
 )
 
@@ -17,17 +17,20 @@ type TransactionService struct {
 	transactionRepo *repository.TransactionRepository
 	customerService *CustomerService
 	merchantRepo    *repository.MerchantRepository
+	frontendURL     string
 }
 
 func NewTransactionService(
 	transactionRepo *repository.TransactionRepository,
 	customerService *CustomerService,
 	merchantRepo *repository.MerchantRepository,
+	frontendURL string,
 ) *TransactionService {
 	return &TransactionService{
 		transactionRepo: transactionRepo,
 		customerService: customerService,
 		merchantRepo:    merchantRepo,
+		frontendURL:     frontendURL,
 	}
 }
 
@@ -111,7 +114,7 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	// The authorization URL is what the frontend opens.
 	// It points to Payfake's payment popup page, the same UX
 	// as Paystack's hosted payment page but running locally.
-	authURL := fmt.Sprintf("http://localhost:3000/%s", accessCode)
+	authURL := fmt.Sprintf("%s/%s", s.frontendURL, accessCode)
 
 	tx := &domain.Transaction{
 		Base:        domain.Base{ID: uid.NewTransactionID()},

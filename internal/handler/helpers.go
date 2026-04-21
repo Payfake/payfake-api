@@ -4,55 +4,81 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/go-playground/validator/v10"
+	"github.com/payfake/payfake-api/internal/response"
 )
 
-// parseBindingErrors converts Gin's binding validation errors into
-// our ErrorField slice format. Gin uses the go-playground/validator
-// library under the hood, when ShouldBindJSON fails it returns
-// a ValidationErrors type we can range over to get field-level detail.
+// parseBindingErrors converts Gin's validator errors into Paystack's
+// field-keyed error map:
 //
-// If the error is not a ValidationErrors (e.g. malformed JSON) we
-// return a generic "invalid request body" error field instead of
-// panicking trying to type-assert something unexpected.
-func parseBindingErrors(err error) []response.ErrorField {
-	var validationErrors validator.ValidationErrors
-	if errors.As(err, &validationErrors) {
-		fields := make([]response.ErrorField, 0, len(validationErrors))
-		for _, ve := range validationErrors {
-			fields = append(fields, response.ErrorField{
-				// Field() returns the struct field name, we lowercase it
-				// to match the JSON field name the client sent.
-				Field:   strings.ToLower(ve.Field()),
-				Message: validationMessage(ve),
+//	{ "email": [{ "rule": "required", "message": "Email is required" }] }
+//
+// This matches https://paystack.com/docs/api exactly so developers
+// get the same error shape whether they're hitting Payfake or real Paystack.
+func parseBindingErrors(err error) map[string][]response.ValidationDetail {
+	var ve validator.ValidationErrors
+	if errors.As(err, &ve) {
+		fields := make(map[string][]response.ValidationDetail)
+		for _, e := range ve {
+			field := toSnakeCase(e.Field())
+			fields[field] = append(fields[field], response.ValidationDetail{
+				Rule:    e.Tag(),
+				Message: ruleMessage(e),
 			})
 		}
 		return fields
 	}
-
-	// Malformed JSON or wrong content type, not a validation error.
-	return []response.ErrorField{
-		{Field: "body", Message: "Invalid request body"},
+	// Not a validation error, malformed JSON, wrong content type etc.
+	return map[string][]response.ValidationDetail{
+		"body": {{Rule: "invalid", Message: "Invalid request body"}},
 	}
 }
 
-// validationMessage returns a human-readable message for each
-// validator tag. We map the most common tags explicitly and fall
-// back to the tag name for anything we haven't covered yet.
-func validationMessage(ve validator.FieldError) string {
-	switch ve.Tag() {
+// field builds a single-field error map, shorthand for the common case
+// of one field, one rule violation.
+func field(name, rule, message string) map[string][]response.ValidationDetail {
+	return map[string][]response.ValidationDetail{
+		name: {{Rule: rule, Message: message}},
+	}
+}
+
+// fields builds a multi-field error map from a flat list of (name, rule, message) triples.
+func fields(pairs ...string) map[string][]response.ValidationDetail {
+	result := make(map[string][]response.ValidationDetail)
+	for i := 0; i+2 < len(pairs); i += 3 {
+		name, rule, msg := pairs[i], pairs[i+1], pairs[i+2]
+		result[name] = append(result[name], response.ValidationDetail{Rule: rule, Message: msg})
+	}
+	return result
+}
+
+func ruleMessage(e validator.FieldError) string {
+	f := toSnakeCase(e.Field())
+	switch e.Tag() {
 	case "required":
-		return "This field is required"
+		return strings.Title(f) + " is required"
 	case "email":
 		return "Must be a valid email address"
 	case "min":
-		return "Value is too short or too small (min: " + ve.Param() + ")"
+		return "Value too short or too small (min: " + e.Param() + ")"
 	case "max":
-		return "Value is too long or too large (max: " + ve.Param() + ")"
+		return "Value too long or too large (max: " + e.Param() + ")"
 	case "oneof":
-		return "Must be one of: " + ve.Param()
+		return "Must be one of: " + e.Param()
 	default:
 		return "Invalid value"
 	}
+}
+
+// toSnakeCase converts PascalCase/camelCase field names from validator
+// to the snake_case names developers expect in the error response.
+func toSnakeCase(s string) string {
+	var result []rune
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			result = append(result, '_')
+		}
+		result = append(result, []rune(strings.ToLower(string(r)))...)
+	}
+	return string(result)
 }

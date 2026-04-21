@@ -4,11 +4,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/response"
 	"gorm.io/gorm"
 
-	"github.com/GordenArcher/payfake/internal/domain"
+	"github.com/payfake/payfake-api/internal/domain"
 )
 
 // RequireSecretKey is the authentication middleware for all Paystack-compatible

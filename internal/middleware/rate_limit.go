@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/response"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/response"
 )
 
 // bucket represents a sliding window rate limit tracker for a single client.
@@ -79,7 +79,7 @@ func RateLimit(maxRequests int, windowDuration time.Duration) gin.HandlerFunc {
 				429,
 				"Too many requests, please slow down",
 				response.RateLimitExceeded,
-				[]response.ErrorField{},
+				nil,
 			)
 			c.Abort()
 			return
@@ -130,7 +130,14 @@ func RateLimitWebhookTest() gin.HandlerFunc {
 				429,
 				"Too many test webhooks — wait a minute before trying again",
 				response.RateLimitExceeded,
-				[]response.ErrorField{},
+				map[string][]response.ValidationDetail{
+					"webhook": {
+						{
+							Rule:    "rate_limit",
+							Message: "You can only trigger 5 test webhooks per minute",
+						},
+					},
+				},
 			)
 			c.Abort()
 			return

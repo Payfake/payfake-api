@@ -4,10 +4,10 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/GordenArcher/payfake/internal/middleware"
-	"github.com/GordenArcher/payfake/internal/response"
-	"github.com/GordenArcher/payfake/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/middleware"
+	"github.com/payfake/payfake-api/internal/response"
+	"github.com/payfake/payfake-api/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -21,8 +21,6 @@ func NewMerchantHandler(db *gorm.DB, merchantSvc *service.MerchantService, authS
 	return &MerchantHandler{db: db, merchantSvc: merchantSvc, authSvc: authSvc}
 }
 
-// GetProfile handles GET /api/v1/merchant
-// Returns the full merchant profile for the dashboard settings page.
 func (h *MerchantHandler) GetProfile(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -32,11 +30,11 @@ func (h *MerchantHandler) GetProfile(c *gin.Context) {
 
 	merchant, err := h.merchantSvc.GetProfile(merchantID)
 	if err != nil {
-		response.InternalErr(c, "Failed to fetch profile")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Profile fetched",
+	response.Success(c, http.StatusOK, "Profile retrieved",
 		response.MerchantFetched, gin.H{
 			"id":            merchant.ID,
 			"business_name": merchant.BusinessName,
@@ -54,9 +52,6 @@ type updateProfileRequest struct {
 	WebhookURL   string `json:"webhook_url"`
 }
 
-// UpdateProfile handles PUT /api/v1/merchant
-// Allows the merchant to update their business name and webhook URL
-// from the dashboard settings page.
 func (h *MerchantHandler) UpdateProfile(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -72,7 +67,7 @@ func (h *MerchantHandler) UpdateProfile(c *gin.Context) {
 
 	merchant, err := h.merchantSvc.UpdateProfile(merchantID, req.BusinessName, req.WebhookURL)
 	if err != nil {
-		response.InternalErr(c, "Failed to update profile")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
@@ -91,7 +86,6 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8"`
 }
 
-// ChangePassword handles PUT /api/v1/merchant/password
 func (h *MerchantHandler) ChangePassword(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
@@ -112,16 +106,15 @@ func (h *MerchantHandler) ChangePassword(c *gin.Context) {
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidCredentials) {
-			response.Error(c, http.StatusUnauthorized, "Current password is incorrect",
-				response.AuthInvalidCredentials, []response.ErrorField{
-					{Field: "current_password", Message: "Incorrect password"},
-				})
+			response.Error(c, http.StatusUnauthorized,
+				"Current password is incorrect",
+				response.AuthInvalidCredentials,
+				field("current_password", "invalid", "Incorrect password"))
 			return
 		}
-		response.InternalErr(c, "Failed to change password")
+		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Password changed successfully",
-		response.MerchantUpdated, nil)
+	response.Success(c, http.StatusOK, "Password updated", response.MerchantUpdated, nil)
 }

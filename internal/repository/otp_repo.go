@@ -3,8 +3,8 @@ package repository
 import (
 	"time"
 
-	"github.com/GordenArcher/payfake/internal/domain"
-	"github.com/GordenArcher/payfake/pkg/uid"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"gorm.io/gorm"
 )
 
