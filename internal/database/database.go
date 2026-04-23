@@ -57,6 +57,18 @@ func migrate(db *gorm.DB) error {
 		return err
 	}
 
+	migrator := db.Migrator()
+	if migrator.HasIndex(&domain.Transaction{}, "idx_transactions_reference") {
+		if err := migrator.DropIndex(&domain.Transaction{}, "idx_transactions_reference"); err != nil {
+			return err
+		}
+	}
+	if !migrator.HasIndex(&domain.Transaction{}, "idx_transactions_merchant_reference") {
+		if err := migrator.CreateIndex(&domain.Transaction{}, "idx_transactions_merchant_reference"); err != nil {
+			return err
+		}
+	}
+
 	log.Println("[payfake] migrations complete")
 	return nil
 }

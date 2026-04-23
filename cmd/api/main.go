@@ -50,7 +50,7 @@ func main() {
 	}
 
 	/// Start background workers before the server.
-	workerCtx, _ := context.WithCancel(context.Background())
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
 
 	// Webhook retry, re-delivers failed webhooks every 60 seconds.
 	result.WebhookSvc.StartRetryWorker(workerCtx)
@@ -77,6 +77,7 @@ func main() {
 	<-quit
 
 	log.Println("[payfake] shutting down gracefully...")
+	stopWorkers()
 
 	// Give in-flight requests 10 seconds to complete before forcing shutdown.
 	// This covers MoMo async goroutines and webhook delivery goroutines

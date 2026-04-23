@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -15,9 +16,26 @@ import (
 	"github.com/payfake/payfake-api/pkg/uid"
 )
 
+const maxWebhookResponseBodyBytes = 8192
+
+type webhookRepository interface {
+	CreateEvent(*domain.WebhookEvent) error
+	CreateAttempt(*domain.WebhookAttempt) error
+	RecordAttemptResult(string, bool) error
+	FindEventByID(string, string) (*domain.WebhookEvent, error)
+	ListEvents(string, int, int) ([]domain.WebhookEvent, int64, error)
+	GetAttempts(string) ([]domain.WebhookAttempt, error)
+	FindUndeliveredEvents() ([]domain.WebhookEvent, error)
+}
+
+type merchantRepository interface {
+	FindByID(string) (*domain.Merchant, error)
+}
+
 type WebhookService struct {
-	webhookRepo  *repository.WebhookRepository
-	merchantRepo *repository.MerchantRepository
+	webhookRepo  webhookRepository
+	merchantRepo merchantRepository
+	httpClient   *http.Client
 }
 
 func NewWebhookService(
@@ -100,9 +118,12 @@ func (s *WebhookService) deliver(event *domain.WebhookEvent, payloadBytes []byte
 	signature := crypto.Sign(merchant.SecretKey, payloadBytes)
 	req.Header.Set(crypto.SignatureHeader, signature)
 
-	// 10 second timeout, we don't want a slow merchant endpoint
-	// to keep the goroutine alive indefinitely.
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := s.httpClient
+	if client == nil {
+		// 10 second timeout, we don't want a slow merchant endpoint
+		// to keep the goroutine alive indefinitely.
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
 
 	attemptedAt := time.Now()
 	resp, err := client.Do(req)
@@ -121,16 +142,24 @@ func (s *WebhookService) deliver(event *domain.WebhookEvent, payloadBytes []byte
 	} else {
 		defer resp.Body.Close()
 		attempt.StatusCode = resp.StatusCode
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxWebhookResponseBodyBytes+1))
+		if readErr != nil {
+			attempt.ResponseBody = fmt.Sprintf("failed to read response body: %v", readErr)
+		} else {
+			attempt.ResponseBody = truncateWebhookResponseBody(body)
+		}
 		// A 2xx response from the merchant's endpoint means they
 		// received and acknowledged the webhook successfully.
 		attempt.Succeeded = resp.StatusCode >= 200 && resp.StatusCode < 300
 	}
 
-	s.webhookRepo.CreateAttempt(attempt)
-
-	newAttempts := event.Attempts + 1
-	delivered := attempt.Succeeded
-	s.webhookRepo.UpdateEventDelivery(event.ID, delivered, newAttempts)
+	if err := s.webhookRepo.CreateAttempt(attempt); err != nil {
+		log.Printf("[payfake] webhook delivery: failed to record attempt %s: %v", event.ID, err)
+		return
+	}
+	if err := s.webhookRepo.RecordAttemptResult(event.ID, attempt.Succeeded); err != nil {
+		log.Printf("[payfake] webhook delivery: failed to update event %s: %v", event.ID, err)
+	}
 }
 
 // Retry manually re-triggers delivery for a specific webhook event.
@@ -216,4 +245,11 @@ func (s *WebhookService) retryUndelivered() {
 		// Deliver in a goroutine so one slow endpoint doesn't block the others.
 		go s.deliver(&event, payloadBytes)
 	}
+}
+
+func truncateWebhookResponseBody(body []byte) string {
+	if len(body) <= maxWebhookResponseBodyBytes {
+		return string(body)
+	}
+	return string(body[:maxWebhookResponseBodyBytes]) + "...[truncated]"
 }

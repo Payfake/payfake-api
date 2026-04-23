@@ -31,9 +31,9 @@ const (
 
 type Transaction struct {
 	Base
-	MerchantID  string             `gorm:"type:varchar(36);not null;index" json:"merchant_id"`
+	MerchantID  string             `gorm:"type:varchar(36);not null;index;index:idx_transactions_merchant_reference,unique" json:"merchant_id"`
 	CustomerID  string             `gorm:"type:varchar(36);index" json:"customer_id"`
-	Reference   string             `gorm:"type:varchar(100);uniqueIndex;not null" json:"reference"`
+	Reference   string             `gorm:"type:varchar(100);not null;index;index:idx_transactions_merchant_reference,unique" json:"reference"`
 	Amount      int64              `gorm:"not null" json:"amount"`
 	Currency    Currency           `gorm:"type:varchar(10);default:'GHS'" json:"currency"`
 	Status      TransactionStatus  `gorm:"type:varchar(20);default:'pending'" json:"status"`

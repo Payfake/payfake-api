@@ -126,6 +126,15 @@ func (r *TransactionRepository) UpdateStatus(id string, status domain.Transactio
 		Updates(updates).Error
 }
 
+// UpdateChannel records the actual payment channel chosen for a transaction.
+// Initialize may leave the channel empty when multiple channels are allowed,
+// but once a charge starts we know the concrete channel and persist it.
+func (r *TransactionRepository) UpdateChannel(id string, channel domain.TransactionChannel) error {
+	return r.db.Model(&domain.Transaction{}).
+		Where("id = ?", id).
+		Update("channel", channel).Error
+}
+
 // ReferenceExists checks if a reference is already used by this merchant.
 // References must be unique per merchant, this is how developers
 // implement idempotency on their end. Same reference = same transaction.

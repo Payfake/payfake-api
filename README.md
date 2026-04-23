@@ -17,6 +17,10 @@ PAYSTACK_BASE_URL=https://api.paystack.co
 Same response shapes. Same URL structure. Same error formats. Same webhooks.
 Your existing Paystack integration works against Payfake unchanged.
 
+For browser checkout routes under `/api/v1/public`, Payfake now requires both
+`access_code` and `reference` for follow-up actions like OTP submission,
+3DS completion, and public status polling.
+
 ---
 
 ## Why Payfake over Paystack Test Mode
@@ -28,7 +32,7 @@ Paystack test mode is good but has real limitations:
 | Force specific failure | ❌ | ✅ |
 | Simulate network delays | ❌ | ✅ |
 | MoMo without real phone | ❌ | ✅ |
-| Full request/response logs | ❌ | ✅ |
+| Full request/response logs (sensitive fields redacted) | ❌ | ✅ |
 | Works offline | ❌ | ✅ |
 | CI/CD deterministic testing | ❌ | ✅ |
 | No account required | ❌ | ✅ |
@@ -248,15 +252,15 @@ GET    /api/v1/control/logs
 DELETE /api/v1/control/logs
 GET    /api/v1/control/otp-logs
 
-GET    /api/v1/public/transaction/verify/:reference
+GET    /api/v1/public/transaction/verify/:reference?access_code=ACC_xxx
 GET    /api/v1/public/transaction/:access_code
 POST   /api/v1/public/charge
-POST   /api/v1/public/charge/submit_pin
-POST   /api/v1/public/charge/submit_otp
-POST   /api/v1/public/charge/submit_birthday
-POST   /api/v1/public/charge/submit_address
-POST   /api/v1/public/charge/resend_otp
-POST   /api/v1/public/simulate/3ds/:reference
+POST   /api/v1/public/charge/submit_pin        # body: access_code + reference + pin
+POST   /api/v1/public/charge/submit_otp        # body: access_code + reference + otp
+POST   /api/v1/public/charge/submit_birthday   # body: access_code + reference + birthday
+POST   /api/v1/public/charge/submit_address    # body: access_code + reference + address fields
+POST   /api/v1/public/charge/resend_otp        # body: access_code + reference
+POST   /api/v1/public/simulate/3ds/:reference  # body: access_code + reference
 ```
 
 ---

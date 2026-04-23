@@ -13,6 +13,9 @@ docker-compose up --build
 
 Server at `http://localhost:8080`.
 
+For browser checkout flows under `/api/v1/public`, keep both the `access_code`
+and the transaction `reference`. Public follow-up calls require both.
+
 ---
 
 ## Register

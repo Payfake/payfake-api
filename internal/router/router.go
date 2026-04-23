@@ -21,14 +21,13 @@ type RouterResult struct {
 func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) RouterResult {
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(middleware.CORS(frontendURL))
 	r.Use(middleware.RequestID())
-	r.Use(middleware.Logger())
-	r.Use(middleware.RateLimit(200, time.Minute))
 	r.Use(func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
 		c.Next()
 	})
+	r.Use(middleware.Logger())
+	r.Use(middleware.RateLimit(200, time.Minute))
 
 	isProd := appEnv == "production"
 
@@ -76,6 +75,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Transaction — matches https://api.paystack.co/transaction/*
 	transaction := r.Group("/transaction")
+	transaction.Use(middleware.PrivateCORS(frontendURL))
 	transaction.Use(middleware.RequireSecretKey(db))
 	{
 		transaction.POST("/initialize", transactionHandler.Initialize)
@@ -87,6 +87,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Charge — single unified endpoint matching https://api.paystack.co/charge
 	charge := r.Group("/charge")
+	charge.Use(middleware.PrivateCORS(frontendURL))
 	charge.Use(middleware.RequireSecretKey(db))
 	{
 		charge.POST("", chargeHandler.Charge)
@@ -100,6 +101,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Customer — matches https://api.paystack.co/customer/*
 	customer := r.Group("/customer")
+	customer.Use(middleware.PrivateCORS(frontendURL))
 	customer.Use(middleware.RequireSecretKey(db))
 	{
 		customer.POST("", customerHandler.Create)
@@ -118,6 +120,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Auth (Payfake dashboard auth, no Paystack equivalent)
 	auth := v1.Group("/auth")
+	auth.Use(middleware.PrivateCORS(frontendURL))
 	{
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
@@ -135,6 +138,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Merchant profile (Payfake dashboard, no Paystack equivalent)
 	merchant := v1.Group("/merchant")
+	merchant.Use(middleware.PrivateCORS(frontendURL))
 	merchant.Use(middleware.RequireJWT())
 	{
 		merchant.GET("", merchantHandler.GetProfile)
@@ -142,11 +146,16 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 		merchant.PUT("/password", merchantHandler.ChangePassword)
 		merchant.GET("/webhook", webhookHandler.GetWebhookURL)
 		merchant.POST("/webhook", webhookHandler.UpdateWebhookURL)
-		merchant.POST("/webhook/test", webhookHandler.TestWebhook)
+		merchant.POST("/webhook/test",
+			middleware.HydrateMerchantIDFromJWT(authSvc),
+			middleware.RateLimitWebhookTest(),
+			webhookHandler.TestWebhook,
+		)
 	}
 
 	// Control panel (Payfake-specific, no Paystack equivalent)
 	control := v1.Group("/control")
+	control.Use(middleware.PrivateCORS(frontendURL))
 	control.Use(middleware.RequireJWT())
 	{
 		control.GET("/stats", statsHandler.GetStats)
@@ -167,6 +176,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	// Public checkout (no auth, access_code authenticates)
 	// Static path registered before param path to avoid Gin conflict.
 	public := v1.Group("/public")
+	public.Use(middleware.PublicCORS())
 	{
 		public.GET("/transaction/verify/:reference", transactionHandler.PublicVerify)
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)

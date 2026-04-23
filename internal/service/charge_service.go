@@ -163,6 +163,9 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
+	if err := s.setTransactionChannel(tx, domain.ChannelCard); err != nil {
+		return nil, err
+	}
 
 	resp := &ChargeFlowResponse{
 		Status:      charge.FlowStatus,
@@ -214,6 +217,9 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
+	if err := s.setTransactionChannel(tx, domain.ChannelMobileMoney); err != nil {
+		return nil, err
+	}
 
 	s.otpRepo.Create(input.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
 
@@ -252,6 +258,9 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
+	}
+	if err := s.setTransactionChannel(tx, domain.ChannelBankTransfer); err != nil {
+		return nil, err
 	}
 
 	return &ChargeFlowResponse{
@@ -616,7 +625,7 @@ func (s *ChargeService) failCharge(charge *domain.Charge, errorCode string) (*Ch
 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowFailed,
-		Reference:   charge.TransactionID,
+		Reference:   tx.Reference,
 		DisplayText: "Payment failed",
 		Charge:      charge,
 		Transaction: tx,
@@ -664,7 +673,10 @@ func (s *ChargeService) findOrCreateTransaction(
 
 	// Neither provided — create inline transaction
 	if email == "" || amount <= 0 {
-		return nil, ErrTransactionNotFound
+		if email == "" {
+			return nil, ErrTransactionNotFound
+		}
+		return nil, ErrInvalidAmount
 	}
 
 	customer, err := s.customerRepo.FindOrCreate(merchantID, email)
@@ -679,8 +691,11 @@ func (s *ChargeService) findOrCreateTransaction(
 		Amount:     amount,
 		Currency:   domain.CurrencyGHS,
 		Status:     domain.TransactionPending,
-		Reference:  uid.NewReference(),
+		Reference:  reference,
 		AccessCode: uid.NewAccessCode(),
+	}
+	if tx.Reference == "" {
+		tx.Reference = uid.NewReference()
 	}
 
 	if err := s.transactionRepo.Create(tx); err != nil {
@@ -691,27 +706,19 @@ func (s *ChargeService) findOrCreateTransaction(
 	return tx, nil
 }
 
-// GetMerchantByReference resolves the merchant who owns the charge
-// for a given transaction reference. We go through the charge record
-// not just the transaction, this ensures the reference has an active
-// charge initiated by a real client, not just any transaction reference
-// in the system. Prevents cross-merchant OTP submission attacks where
-// a malicious client submits an OTP for another merchant's transaction.
-func (s *ChargeService) GetMerchantByReference(reference string) (*domain.Merchant, error) {
-	// Find transaction by reference. unscoped since public endpoints
-	// don't have merchant context yet.
-	var tx domain.Transaction
-	result := s.transactionRepo.DB().
-		Where("reference = ?", reference).
-		First(&tx)
-	if result.Error != nil {
+// GetMerchantByAccessCodeAndReference validates a public charge-step request.
+// Public checkout actions must prove both the checkout token (access_code)
+// and the transaction reference before mutating any charge state.
+func (s *ChargeService) GetMerchantByAccessCodeAndReference(accessCode, reference string) (*domain.Merchant, error) {
+	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	if tx.Reference != reference {
 		return nil, ErrTransactionNotFound
 	}
 
-	// Verify a charge actually exists for this transaction.
-	// Without this check, any transaction reference (even ones that
-	// were never charged) could be used to call submit endpoints.
-	_, err := s.chargeRepo.FindByTransactionID(tx.ID)
+	_, err = s.chargeRepo.FindByTransactionID(tx.ID)
 	if err != nil {
 		return nil, ErrChargeNotFound
 	}
@@ -733,6 +740,17 @@ func (s *ChargeService) FetchChargeByTransactionID(transactionID string) (*domai
 		return nil, ErrChargeNotFound
 	}
 	return charge, nil
+}
+
+func (s *ChargeService) setTransactionChannel(tx *domain.Transaction, channel domain.TransactionChannel) error {
+	if tx.Channel == channel {
+		return nil
+	}
+	if err := s.transactionRepo.UpdateChannel(tx.ID, channel); err != nil {
+		return fmt.Errorf("failed to update transaction channel: %w", err)
+	}
+	tx.Channel = channel
+	return nil
 }
 
 func safeCardLast4(cardNumber string) string {

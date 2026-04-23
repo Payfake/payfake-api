@@ -1,15 +1,23 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/payfake/payfake-api/internal/domain"
 	"github.com/payfake/payfake-api/internal/repository"
 	"github.com/payfake/payfake-api/pkg/uid"
+	"gorm.io/gorm"
 )
 
+type scenarioRepository interface {
+	FindByMerchantID(string) (*domain.ScenarioConfig, error)
+	Create(*domain.ScenarioConfig) error
+	Update(*domain.ScenarioConfig) error
+}
+
 type ScenarioService struct {
-	scenarioRepo *repository.ScenarioRepository
+	scenarioRepo scenarioRepository
 }
 
 func NewScenarioService(scenarioRepo *repository.ScenarioRepository) *ScenarioService {
@@ -29,6 +37,10 @@ type UpdateScenarioInput struct {
 func (s *ScenarioService) Get(merchantID string) (*domain.ScenarioConfig, error) {
 	scenario, err := s.scenarioRepo.FindByMerchantID(merchantID)
 	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("failed to fetch scenario: %w", err)
+		}
+
 		// No config exists yet, create the default one.
 		scenario = &domain.ScenarioConfig{
 			Base:        domain.Base{ID: uid.NewScenarioID()},

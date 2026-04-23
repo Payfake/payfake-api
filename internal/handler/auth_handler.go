@@ -117,7 +117,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 	tokens, err := h.authSvc.RefreshTokens(refreshToken)
 	if err != nil {
-		middleware.ClearAuthCookies(c)
+		middleware.ClearAuthCookies(c, h.isProd)
 		if errors.Is(err, service.ErrTokenExpired) {
 			response.Error(c, http.StatusUnauthorized,
 				"Session expired, please login again",
@@ -138,7 +138,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
-	middleware.ClearAuthCookies(c)
+	middleware.ClearAuthCookies(c, h.isProd)
 	response.Success(c, http.StatusOK, "Logged out successfully", response.AuthLogoutSuccess, nil)
 }
 

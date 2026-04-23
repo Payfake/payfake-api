@@ -82,10 +82,11 @@ If the OTP has expired, call `resend_otp` to generate a fresh one.
 ## Polling During pay_offline
 
 After `submit_otp` returns `pay_offline` the checkout page polls
-`GET /api/v1/public/transaction/verify/:reference` every 3 seconds:
+`GET /api/v1/public/transaction/verify/:reference?access_code=ACC_xxx`
+every 3 seconds:
 
 ```bash
-curl http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx
+curl "http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx?access_code=ACC_xxx"
 ```
 
 Response while pending:

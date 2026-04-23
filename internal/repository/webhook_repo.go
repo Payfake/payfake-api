@@ -64,18 +64,22 @@ func (r *WebhookRepository) CreateAttempt(attempt *domain.WebhookAttempt) error 
 	return r.db.Create(attempt).Error
 }
 
-// UpdateEventDelivery updates the delivery status of a webhook event
-// after a delivery attempt. We update attempts count, last_attempt_at,
-// and delivered flag in a single query to keep the record consistent.
-func (r *WebhookRepository) UpdateEventDelivery(id string, delivered bool, attempts int) error {
+// RecordAttemptResult increments the attempt count and updates delivery state.
+// The increment happens in the database so concurrent retries don't stomp each
+// other with stale in-memory attempt counts.
+func (r *WebhookRepository) RecordAttemptResult(id string, delivered bool) error {
 	now := time.Now()
+	updates := map[string]any{
+		"attempts":        gorm.Expr("attempts + ?", 1),
+		"last_attempt_at": now,
+	}
+	if delivered {
+		updates["delivered"] = true
+	}
+
 	return r.db.Model(&domain.WebhookEvent{}).
 		Where("id = ?", id).
-		Updates(map[string]any{
-			"delivered":       delivered,
-			"attempts":        attempts,
-			"last_attempt_at": now,
-		}).Error
+		Updates(updates).Error
 }
 
 // FindUndeliveredEvents retrieves all webhook events that have not

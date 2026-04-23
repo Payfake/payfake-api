@@ -97,7 +97,9 @@ curl -X POST http://localhost:8080/charge \
 The checkout app opens `data.url`. Customer confirms. Checkout calls:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/public/simulate/3ds/TXN_xxx
+curl -X POST http://localhost:8080/api/v1/public/simulate/3ds/TXN_xxx \
+  -H "Content-Type: application/json" \
+  -d '{"access_code":"ACC_xxx","reference":"TXN_xxx"}'
 # → { "status": true, "data": { "status": "success" } }
 ```
 
@@ -130,7 +132,7 @@ curl -X POST http://localhost:8080/charge/submit_otp \
 # → { "status": true, "data": { "status": "pay_offline" } }
 
 # Poll every 3 seconds
-curl http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx
+curl "http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx?access_code=ACC_xxx"
 # → { "status": true, "data": { "status": "success" } }
 ```
 
@@ -453,17 +455,18 @@ Auth: Bearer JWT
 
 ## Public `/api/v1/public`
 
-No auth, access_code authenticates.
+No auth. Load the checkout with `access_code`, then send both `access_code`
+and `reference` on every follow-up mutation.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/transaction/verify/:reference` | Poll status (MoMo) |
+| GET | `/transaction/verify/:reference?access_code=ACC_xxx` | Poll status (MoMo) |
 | GET | `/transaction/:access_code` | Load checkout |
 | POST | `/charge` | Initiate (with `access_code` in body) |
-| POST | `/charge/submit_pin` | Submit PIN |
-| POST | `/charge/submit_otp` | Submit OTP |
-| POST | `/charge/submit_birthday` | Submit DOB |
-| POST | `/charge/submit_address` | Submit address |
-| POST | `/charge/resend_otp` | Resend OTP |
-| POST | `/simulate/3ds/:reference` | Complete 3DS |
+| POST | `/charge/submit_pin` | Submit PIN (`access_code`, `reference`, `pin`) |
+| POST | `/charge/submit_otp` | Submit OTP (`access_code`, `reference`, `otp`) |
+| POST | `/charge/submit_birthday` | Submit DOB (`access_code`, `reference`, `birthday`) |
+| POST | `/charge/submit_address` | Submit address (`access_code`, `reference`, address fields) |
+| POST | `/charge/resend_otp` | Resend OTP (`access_code`, `reference`) |
+| POST | `/simulate/3ds/:reference` | Complete 3DS (`access_code` + matching `reference` in body) |
 ```

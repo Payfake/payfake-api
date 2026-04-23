@@ -164,6 +164,11 @@ func (h *ChargeHandler) handleChargeError(c *gin.Context, err error) {
 			response.ChargeFlowInvalidStep, nil)
 	case errors.Is(err, service.ErrChargeNotFound):
 		response.NotFoundErr(c, "Charge not found")
+	case errors.Is(err, service.ErrInvalidAmount):
+		response.UnprocessableErr(c,
+			"Invalid amount",
+			response.TransactionInvalidAmount,
+			field("amount", "min", "Amount must be greater than 0"))
 	case errors.Is(err, service.ErrInvalidOTP):
 		response.UnprocessableErr(c,
 			"Invalid OTP",
@@ -228,6 +233,7 @@ func (h *ChargeHandler) Charge(c *gin.Context) {
 			Phone:      req.MobileMoney.Phone,
 			Provider:   domain.MomoProvider(req.MobileMoney.Provider),
 			Email:      req.Email,
+			Amount:     req.Amount,
 			Reference:  req.Reference,
 		})
 		if err != nil {
@@ -251,6 +257,7 @@ func (h *ChargeHandler) Charge(c *gin.Context) {
 			BankCode:      req.Bank.Code,
 			AccountNumber: req.Bank.AccountNumber,
 			Email:         req.Email,
+			Amount:        req.Amount,
 			Reference:     req.Reference,
 		})
 		if err != nil {
@@ -435,7 +442,7 @@ func (h *ChargeHandler) FetchCharge(c *gin.Context) {
 			"status":        string(charge.Status),
 			"flow_status":   string(charge.FlowStatus),
 			"channel":       string(charge.Channel),
-			"reference":     charge.TransactionID,
+			"reference":     c.Param("reference"),
 			"card_brand":    charge.CardBrand,
 			"card_last4":    charge.CardLast4,
 			"momo_phone":    charge.MomoPhone,
@@ -525,24 +532,57 @@ func (h *ChargeHandler) PublicCharge(c *gin.Context) {
 	}
 }
 
-// publicSubmitRequest is shared by all public submit endpoints.
-type publicSubmitRequest struct {
-	Reference string `json:"reference" binding:"required"`
+type publicReferenceRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
 }
 
-func (h *ChargeHandler) resolvePublicMerchant(reference string) (*domain.Merchant, error) {
-	return h.chargeSvc.GetMerchantByReference(reference)
+func (h *ChargeHandler) resolvePublicMerchant(accessCode, reference string) (*domain.Merchant, error) {
+	return h.chargeSvc.GetMerchantByAccessCodeAndReference(accessCode, reference)
+}
+
+type publicSubmitPINRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
+	PIN        string `json:"pin" binding:"required"`
+}
+
+type publicSubmitOTPRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
+	OTP        string `json:"otp" binding:"required"`
+}
+
+type publicSubmitBirthdayRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
+	Birthday   string `json:"birthday" binding:"required"`
+}
+
+type publicSubmitAddressRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
+	Address    string `json:"address" binding:"required"`
+	City       string `json:"city" binding:"required"`
+	State      string `json:"state" binding:"required"`
+	ZipCode    string `json:"zip_code" binding:"required"`
+	Country    string `json:"country" binding:"required"`
+}
+
+type publicResendOTPRequest struct {
+	AccessCode string `json:"access_code" binding:"required"`
+	Reference  string `json:"reference" binding:"required"`
 }
 
 // PublicSubmitPIN handles POST /api/v1/public/charge/submit_pin
 func (h *ChargeHandler) PublicSubmitPIN(c *gin.Context) {
-	var req submitPINRequest
+	var req publicSubmitPINRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.Reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -565,13 +605,13 @@ func (h *ChargeHandler) PublicSubmitPIN(c *gin.Context) {
 
 // PublicSubmitOTP handles POST /api/v1/public/charge/submit_otp
 func (h *ChargeHandler) PublicSubmitOTP(c *gin.Context) {
-	var req submitOTPRequest
+	var req publicSubmitOTPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.Reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -593,13 +633,13 @@ func (h *ChargeHandler) PublicSubmitOTP(c *gin.Context) {
 
 // PublicSubmitBirthday handles POST /api/v1/public/charge/submit_birthday
 func (h *ChargeHandler) PublicSubmitBirthday(c *gin.Context) {
-	var req submitBirthdayRequest
+	var req publicSubmitBirthdayRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.Reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -622,13 +662,13 @@ func (h *ChargeHandler) PublicSubmitBirthday(c *gin.Context) {
 
 // PublicSubmitAddress handles POST /api/v1/public/charge/submit_address
 func (h *ChargeHandler) PublicSubmitAddress(c *gin.Context) {
-	var req submitAddressRequest
+	var req publicSubmitAddressRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.Reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -654,13 +694,13 @@ func (h *ChargeHandler) PublicSubmitAddress(c *gin.Context) {
 
 // PublicResendOTP handles POST /api/v1/public/charge/resend_otp
 func (h *ChargeHandler) PublicResendOTP(c *gin.Context) {
-	var req resendOTPRequest
+	var req publicResendOTPRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationErr(c, parseBindingErrors(err))
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.Reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -683,13 +723,23 @@ func (h *ChargeHandler) PublicResendOTP(c *gin.Context) {
 // Simulate3DS handles POST /api/v1/public/simulate/3ds/:reference
 // Called by the React checkout app after the customer confirms on the 3DS page.
 func (h *ChargeHandler) Simulate3DS(c *gin.Context) {
+	var req publicReferenceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationErr(c, parseBindingErrors(err))
+		return
+	}
+
 	reference := c.Param("reference")
 	if reference == "" {
 		response.BadRequestErr(c, "Reference is required")
 		return
 	}
+	if req.Reference != reference {
+		response.NotFoundErr(c, "Transaction not found")
+		return
+	}
 
-	merchant, err := h.chargeSvc.GetMerchantByReference(reference)
+	merchant, err := h.resolvePublicMerchant(req.AccessCode, reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return

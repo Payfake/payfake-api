@@ -277,6 +277,19 @@ func (s *TransactionService) GetByAccessCode(accessCode string) (*domain.Transac
 	return tx, nil
 }
 
+// GetByAccessCodeAndReference validates that a public reference belongs to the
+// checkout identified by the access code. Public browser flows must prove both.
+func (s *TransactionService) GetByAccessCodeAndReference(accessCode, reference string) (*domain.Transaction, error) {
+	tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+	if err != nil {
+		return nil, ErrTransactionNotFound
+	}
+	if tx.Reference != reference {
+		return nil, ErrTransactionNotFound
+	}
+	return tx, nil
+}
+
 // GetMerchantForTransaction retrieves the merchant who owns a transaction.
 // Used by the public checkout endpoint to return merchant branding details
 // without exposing any sensitive merchant data to the frontend.

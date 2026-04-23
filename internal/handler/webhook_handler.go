@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -75,45 +74,10 @@ func (h *WebhookHandler) UpdateWebhookURL(c *gin.Context) {
 		})
 }
 
-var (
-	webhookTestMu      sync.Mutex
-	webhookTestBuckets = make(map[string]*webhookTestBucket)
-)
-
-type webhookTestBucket struct {
-	count       int
-	windowStart time.Time
-}
-
-func webhookTestRateLimit(merchantID string) bool {
-	webhookTestMu.Lock()
-	defer webhookTestMu.Unlock()
-
-	b, ok := webhookTestBuckets[merchantID]
-	if !ok {
-		webhookTestBuckets[merchantID] = &webhookTestBucket{count: 1, windowStart: time.Now()}
-		return true
-	}
-	if time.Since(b.windowStart) >= time.Minute {
-		b.count = 1
-		b.windowStart = time.Now()
-		return true
-	}
-	b.count++
-	return b.count <= 5
-}
-
 func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 	merchantID, ok := middleware.GetMerchantIDFromJWT(c, h.authSvc)
 	if !ok {
 		response.UnauthorizedErr(c, "Invalid or expired session")
-		return
-	}
-
-	if !webhookTestRateLimit(merchantID) {
-		response.Error(c, http.StatusTooManyRequests,
-			"Too many test requests, please wait a minute",
-			response.RateLimitExceeded, nil)
 		return
 	}
 

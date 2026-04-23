@@ -317,7 +317,8 @@ Use card number `4111111111111111` to trigger the 3DS flow:
 # Get OTP from /control/otp-logs
 # Submit OTP → status "pay_offline"
 # Payment resolves after delay_ms
-# Poll GET /api/v1/public/transaction/verify/:reference until success or failed
+# Poll GET /api/v1/public/transaction/verify/:reference?access_code=ACC_xxx
+# until success or failed
 ```
 
 ---

@@ -289,8 +289,13 @@ func (h *TransactionHandler) PublicVerify(c *gin.Context) {
 		response.BadRequestErr(c, "Reference is required")
 		return
 	}
+	accessCode := c.Query("access_code")
+	if accessCode == "" {
+		response.BadRequestErr(c, "Access code is required")
+		return
+	}
 
-	tx, err := h.txSvc.GetByReference(reference)
+	tx, err := h.txSvc.GetByAccessCodeAndReference(accessCode, reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return

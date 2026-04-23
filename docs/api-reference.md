@@ -52,7 +52,7 @@ Auth: Cookie or Bearer (JWT)
 
 ---
 
-## Transaction `/api/v1/transaction`
+## Transaction `/transaction`
 
 Auth: `Bearer sk_test_xxx`
 
@@ -90,15 +90,13 @@ Auth: `Bearer sk_test_xxx`
 
 ---
 
-## Charge `/api/v1/charge`
+## Charge `/charge`
 
 Auth: `Bearer sk_test_xxx`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/card` | Initiate card charge → `send_pin` or `open_url` |
-| POST | `/mobile_money` | Initiate MoMo charge → `send_otp` |
-| POST | `/bank` | Initiate bank charge → `send_birthday` |
+| POST | `/` | Initiate card, MoMo, or bank charge |
 | POST | `/submit_pin` | Submit card PIN → `send_otp` |
 | POST | `/submit_otp` | Submit OTP → `pay_offline` or `success`/`failed` |
 | POST | `/submit_birthday` | Submit DOB → `send_otp` |
@@ -135,7 +133,7 @@ Auth: `Bearer sk_test_xxx`
 
 ---
 
-## Customer `/api/v1/customer`
+## Customer `/customer`
 
 Auth: `Bearer sk_test_xxx`
 
@@ -165,7 +163,7 @@ Auth: Cookie or Bearer (JWT)
 | POST | `/webhooks/:id/retry` | Retry failed webhook |
 | GET | `/webhooks/:id/attempts` | Delivery attempt log |
 | POST | `/transactions/:ref/force` | Force transaction outcome |
-| GET | `/logs` | Request/response introspection logs |
+| GET | `/logs` | Request/response introspection logs (sensitive fields redacted) |
 | DELETE | `/logs` | Clear logs |
 | GET | `/otp-logs` | OTP codes generated during charge flows |
 
@@ -214,21 +212,20 @@ Auth: Cookie or Bearer (JWT)
 
 ## Public Checkout `/api/v1/public`
 
-Auth: None — `access_code` in request body or URL
+Auth: None. Initial checkout loads by `access_code`. Every mutating follow-up
+request must include both `access_code` and `reference`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/transaction/verify/:reference` | Poll transaction status (MoMo) |
+| GET | `/transaction/verify/:reference?access_code=ACC_xxx` | Poll transaction status (MoMo) |
 | GET | `/transaction/:access_code` | Load transaction for checkout page |
-| POST | `/charge/card` | Browser-safe card charge |
-| POST | `/charge/mobile_money` | Browser-safe MoMo charge |
-| POST | `/charge/bank` | Browser-safe bank charge |
-| POST | `/charge/submit_pin` | Browser-safe PIN submission |
-| POST | `/charge/submit_otp` | Browser-safe OTP submission |
-| POST | `/charge/submit_birthday` | Browser-safe DOB submission |
-| POST | `/charge/submit_address` | Browser-safe address submission |
-| POST | `/charge/resend_otp` | Browser-safe OTP resend |
-| POST | `/simulate/3ds/:reference` | Complete simulated 3DS flow |
+| POST | `/charge` | Browser-safe charge initiation (`access_code` in body) |
+| POST | `/charge/submit_pin` | Browser-safe PIN submission (`access_code`, `reference`, `pin`) |
+| POST | `/charge/submit_otp` | Browser-safe OTP submission (`access_code`, `reference`, `otp`) |
+| POST | `/charge/submit_birthday` | Browser-safe DOB submission (`access_code`, `reference`, `birthday`) |
+| POST | `/charge/submit_address` | Browser-safe address submission (`access_code`, `reference`, address fields) |
+| POST | `/charge/resend_otp` | Browser-safe OTP resend (`access_code`, `reference`) |
+| POST | `/simulate/3ds/:reference` | Complete simulated 3DS flow (`access_code` + matching `reference` in body) |
 
 **Public transaction response:**
 ```json
@@ -250,6 +247,15 @@ Auth: None — `access_code` in request body or URL
       "last_name": "Mensah"
     }
   }
+}
+```
+
+**Public follow-up request examples:**
+```json
+{
+  "access_code": "ACC_xxx",
+  "reference": "TXN_xxx",
+  "otp": "482931"
 }
 ```
 
@@ -287,27 +293,25 @@ GET     /api/v1/merchant/webhook                           Cookie or Bearer
 POST    /api/v1/merchant/webhook                           Cookie or Bearer
 POST    /api/v1/merchant/webhook/test                      Cookie or Bearer
 
-POST    /api/v1/transaction/initialize                     sk_test_xxx
-GET     /api/v1/transaction/verify/:reference              sk_test_xxx
-GET     /api/v1/transaction                                sk_test_xxx
-GET     /api/v1/transaction/:id                            sk_test_xxx
-POST    /api/v1/transaction/:id/refund                     sk_test_xxx
+POST    /transaction/initialize                            sk_test_xxx
+GET     /transaction/verify/:reference                     sk_test_xxx
+GET     /transaction                                       sk_test_xxx
+GET     /transaction/:id                                   sk_test_xxx
+POST    /transaction/:id/refund                            sk_test_xxx
 
-POST    /api/v1/charge/card                                sk_test_xxx
-POST    /api/v1/charge/mobile_money                        sk_test_xxx
-POST    /api/v1/charge/bank                                sk_test_xxx
-POST    /api/v1/charge/submit_pin                          sk_test_xxx
-POST    /api/v1/charge/submit_otp                          sk_test_xxx
-POST    /api/v1/charge/submit_birthday                     sk_test_xxx
-POST    /api/v1/charge/submit_address                      sk_test_xxx
-POST    /api/v1/charge/resend_otp                          sk_test_xxx
-GET     /api/v1/charge/:reference                          sk_test_xxx
+POST    /charge                                            sk_test_xxx
+POST    /charge/submit_pin                                 sk_test_xxx
+POST    /charge/submit_otp                                 sk_test_xxx
+POST    /charge/submit_birthday                            sk_test_xxx
+POST    /charge/submit_address                             sk_test_xxx
+POST    /charge/resend_otp                                 sk_test_xxx
+GET     /charge/:reference                                 sk_test_xxx
 
-POST    /api/v1/customer                                   sk_test_xxx
-GET     /api/v1/customer                                   sk_test_xxx
-GET     /api/v1/customer/:code                             sk_test_xxx
-PUT     /api/v1/customer/:code                             sk_test_xxx
-GET     /api/v1/customer/:code/transactions                sk_test_xxx
+POST    /customer                                          sk_test_xxx
+GET     /customer                                          sk_test_xxx
+GET     /customer/:code                                    sk_test_xxx
+PUT     /customer/:code                                    sk_test_xxx
+GET     /customer/:code/transactions                       sk_test_xxx
 
 GET     /api/v1/control/stats                              Cookie or Bearer
 GET     /api/v1/control/transactions                       Cookie or Bearer
@@ -324,16 +328,14 @@ DELETE  /api/v1/control/logs                               Cookie or Bearer
 GET     /api/v1/control/otp-logs                           Cookie or Bearer
 
 GET     /api/v1/public/transaction/:access_code            None
-POST    /api/v1/public/charge/card                         None
-POST    /api/v1/public/charge/mobile_money                 None
-POST    /api/v1/public/charge/bank                         None
+POST    /api/v1/public/charge                              None
 POST    /api/v1/public/charge/submit_pin                   None
 POST    /api/v1/public/charge/submit_otp                   None
 POST    /api/v1/public/charge/submit_birthday              None
 POST    /api/v1/public/charge/submit_address               None
 POST    /api/v1/public/charge/resend_otp                   None
 POST    /api/v1/public/simulate/3ds/:reference             None
-GET     /api/v1/public/transaction/verify/:reference       None
+GET     /api/v1/public/transaction/verify/:reference       None (requires access_code query)
 ```
 
 **Total: 51 endpoints**

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
@@ -115,14 +116,32 @@ func RequireJWT() gin.HandlerFunc {
 	}
 }
 
+// HydrateMerchantIDFromJWT validates the token captured by RequireJWT and stores
+// the merchant ID in context for downstream middleware like rate limiting.
+func HydrateMerchantIDFromJWT(authSvc interface {
+	ValidateJWT(string) (string, string, error)
+}) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		merchantID, ok := GetMerchantIDFromJWT(c, authSvc)
+		if !ok {
+			response.UnauthorizedErr(c, "Invalid or expired session")
+			c.Abort()
+			return
+		}
+		c.Set("merchant_id_from_jwt", merchantID)
+		c.Next()
+	}
+}
+
 // SetAuthCookies writes the access and refresh tokens as HttpOnly cookies.
 // HttpOnly = JavaScript cannot read these cookies, only the browser sends them.
-// SameSite=Strict = cookies are only sent on same-site requests, blocking CSRF.
-// Secure = cookies only sent over HTTPS in production.
-// We set both tokens here so login and refresh both call one function.
+// SameSite=Lax keeps cookies off most cross-site subrequests while still
+// working for same-site frontend/API deployments.
 func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry time.Time, isProd bool) {
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
 	refreshMaxAge := 7 * 24 * 60 * 60 // 7 days in seconds
+
+	c.SetSameSite(http.SameSiteLaxMode)
 
 	// Access token cookie, short lived, used on every authenticated request.
 	c.SetCookie(
@@ -152,9 +171,10 @@ func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 
 // ClearAuthCookies removes both auth cookies on logout.
 // Setting MaxAge=-1 tells the browser to delete the cookie immediately.
-func ClearAuthCookies(c *gin.Context) {
-	c.SetCookie("payfake_access", "", -1, "/", "", false, true)
-	c.SetCookie("payfake_refresh", "", -1, "/api/v1/auth/refresh", "", false, true)
+func ClearAuthCookies(c *gin.Context, isProd bool) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("payfake_access", "", -1, "/", "", isProd, true)
+	c.SetCookie("payfake_refresh", "", -1, "/api/v1/auth/refresh", "", isProd, true)
 }
 
 // GetMerchant is a convenience helper that handlers call to retrieve
