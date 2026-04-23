@@ -16,6 +16,7 @@ type ChargeService struct {
 	chargeRepo      *repository.ChargeRepository
 	transactionRepo *repository.TransactionRepository
 	merchantRepo    *repository.MerchantRepository
+	customerRepo    *repository.CustomerRepository
 	otpRepo         *repository.OTPRepository
 	simulatorSvc    *SimulatorService
 	webhookSvc      *WebhookService
@@ -26,6 +27,7 @@ func NewChargeService(
 	chargeRepo *repository.ChargeRepository,
 	transactionRepo *repository.TransactionRepository,
 	merchantRepo *repository.MerchantRepository,
+	customerRepo *repository.CustomerRepository,
 	otpRepo *repository.OTPRepository,
 	simulatorSvc *SimulatorService,
 	webhookSvc *WebhookService,
@@ -35,6 +37,7 @@ func NewChargeService(
 		chargeRepo:      chargeRepo,
 		transactionRepo: transactionRepo,
 		merchantRepo:    merchantRepo,
+		customerRepo:    customerRepo,
 		otpRepo:         otpRepo,
 		simulatorSvc:    simulatorSvc,
 		webhookSvc:      webhookSvc,
@@ -51,6 +54,7 @@ type ChargeCardInput struct {
 	CardExpiry string
 	CardCVV    string
 	Email      string
+	Amount     int64
 }
 
 // ChargeMomoInput is the input for initiating a mobile money charge.
@@ -61,6 +65,7 @@ type ChargeMomoInput struct {
 	Phone      string
 	Provider   domain.MomoProvider
 	Email      string
+	Amount     int64
 }
 
 // ChargeBankInput is the input for initiating a bank transfer charge.
@@ -71,6 +76,7 @@ type ChargeBankInput struct {
 	BankCode      string
 	AccountNumber string
 	Email         string
+	Amount        int64
 }
 
 // SubmitPINInput is the input for submitting a card PIN.
@@ -126,7 +132,10 @@ type ChargeFlowResponse struct {
 // We detect card type from the number, Visa/Mastercard starting
 // with certain ranges are treated as international.
 func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, error) {
-	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
+	tx, err := s.findOrCreateTransaction(
+		input.AccessCode, input.Reference,
+		input.MerchantID, input.Email, input.Amount,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -144,28 +153,16 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		CardType:      cardType,
 	}
 
-	// Determine the first step based on card type.
 	if cardType == domain.CardTypeInternational {
-		// International cards go through 3DS verification.
-		// We generate a simulated 3DS URL, the checkout page
-		// opens this in an iframe or redirect, simulates the
-		// customer completing verification, then the flow resolves.
 		charge.FlowStatus = domain.FlowOpenURL
-		// Uses FRONTEND_URL from config, works in production.
-		// Developer sets FRONTEND_URL=https://checkout.payfake.co in .env
 		charge.ThreeDSURL = fmt.Sprintf("%s/simulate/3ds/%s", s.frontendURL, tx.Reference)
-
 	} else {
-		// Local Ghana cards start with PIN entry.
 		charge.FlowStatus = domain.FlowSendPIN
 	}
 
 	if err := s.chargeRepo.Create(charge); err != nil {
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
-
-	// Update transaction channel now that we know it.
-	s.transactionRepo.UpdateStatus(tx.ID, domain.TransactionPending, nil)
 
 	resp := &ChargeFlowResponse{
 		Status:      charge.FlowStatus,
@@ -175,10 +172,10 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 	}
 
 	if cardType == domain.CardTypeInternational {
-		resp.DisplayText = "Complete 3D Secure verification to proceed"
+		resp.DisplayText = "Please complete authentication on the provided url"
 		resp.ThreeDSURL = charge.ThreeDSURL
 	} else {
-		resp.DisplayText = "Please enter your card PIN"
+		resp.DisplayText = "Please enter your PIN"
 	}
 
 	return resp, nil
@@ -189,23 +186,18 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 // After OTP verification the flow moves to pay_offline while waiting
 // for the customer to approve the USSD prompt.
 func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowResponse, error) {
-	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
+	tx, err := s.findOrCreateTransaction(
+		input.AccessCode, input.Reference,
+		input.MerchantID, input.Email, input.Amount,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate OTP for MoMo verification.
-	// In real Paystack this is sent via SMS to the customer's phone.
-	// In Payfake we log it to the introspection logs so the developer
-	// can read it without needing a real phone.
 	otpCode, err := otp.GenerateOTP()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
-
-	// Log OTP so developer can read it from /control/otp-logs during testing.
-	// This never goes to the client, only stored in the DB.
-	s.otpRepo.Create(tx.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
 
 	charge := &domain.Charge{
 		Base:          domain.Base{ID: uid.NewChargeID()},
@@ -223,12 +215,12 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 		return nil, fmt.Errorf("failed to create charge: %w", err)
 	}
 
+	s.otpRepo.Create(input.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
+
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendOTP,
 		Reference:   tx.Reference,
-		DisplayText: fmt.Sprintf("Enter the OTP sent to %s", maskPhone(input.Phone)),
-		// OTPCode is included so the handler can log it.
-		// The handler strips it before sending to the client.
+		DisplayText: fmt.Sprintf("Please enter OTP sent to %s", maskPhone(input.Phone)),
 		OTPCode:     otpCode,
 		Charge:      charge,
 		Transaction: tx,
@@ -239,7 +231,10 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 // Returns send_birthday, the customer must enter their date of birth
 // as the first verification step, same as real Paystack bank charges.
 func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, error) {
-	tx, err := s.findPendingTransaction(input.AccessCode, input.Reference, input.MerchantID)
+	tx, err := s.findOrCreateTransaction(
+		input.AccessCode, input.Reference,
+		input.MerchantID, input.Email, input.Amount,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +257,7 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendBirthday,
 		Reference:   tx.Reference,
-		DisplayText: "Enter your date of birth to verify your identity",
+		DisplayText: "Please enter your date of birth",
 		Charge:      charge,
 		Transaction: tx,
 	}, nil
@@ -639,30 +634,60 @@ func (s *ChargeService) resolveMomoAsync(charge *domain.Charge, reference, merch
 	s.succeedCharge(charge, reference, merchantID)
 }
 
-// findPendingTransaction looks up a transaction by access_code or reference.
-func (s *ChargeService) findPendingTransaction(accessCode, reference, merchantID string) (*domain.Transaction, error) {
-	var tx *domain.Transaction
-	var err error
-
+// findOrCreateTransaction finds an existing pending transaction via access_code
+// or reference, or creates one inline when called directly with email+amount.
+// Real Paystack supports calling /charge directly without a prior /transaction/initialize.
+func (s *ChargeService) findOrCreateTransaction(
+	accessCode, reference, merchantID, email string, amount int64,
+) (*domain.Transaction, error) {
+	// Try access_code first
 	if accessCode != "" {
-		tx, err = s.transactionRepo.FindByAccessCode(accessCode)
-	} else if reference != "" {
-		tx, err = s.transactionRepo.FindByReference(reference, merchantID)
-	} else {
-		return nil, fmt.Errorf("access_code or reference is required")
-	}
-
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrTransactionNotFound
+		tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+		if err == nil {
+			if tx.Status != domain.TransactionPending {
+				return nil, ErrTransactionNotPending
+			}
+			return tx, nil
 		}
-		return nil, fmt.Errorf("failed to find transaction: %w", err)
 	}
 
-	if tx.Status != domain.TransactionPending {
-		return nil, ErrTransactionNotPending
+	// Try reference
+	if reference != "" {
+		tx, err := s.transactionRepo.FindByReference(reference, merchantID)
+		if err == nil {
+			if tx.Status != domain.TransactionPending {
+				return nil, ErrTransactionNotPending
+			}
+			return tx, nil
+		}
 	}
 
+	// Neither provided — create inline transaction
+	if email == "" || amount <= 0 {
+		return nil, ErrTransactionNotFound
+	}
+
+	customer, err := s.customerRepo.FindOrCreate(merchantID, email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve customer: %w", err)
+	}
+
+	tx := &domain.Transaction{
+		Base:       domain.Base{ID: uid.NewTransactionID()},
+		MerchantID: merchantID,
+		CustomerID: customer.ID,
+		Amount:     amount,
+		Currency:   domain.CurrencyGHS,
+		Status:     domain.TransactionPending,
+		Reference:  uid.NewReference(),
+		AccessCode: uid.NewAccessCode(),
+	}
+
+	if err := s.transactionRepo.Create(tx); err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	tx.Customer = *customer
 	return tx, nil
 }
 

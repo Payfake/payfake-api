@@ -50,7 +50,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	simulatorSvc := service.NewSimulatorService(scenarioRepo)
 	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo)
 	txSvc := service.NewTransactionService(transactionRepo, customerSvc, merchantRepo, frontendURL)
-	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, otpRepo, simulatorSvc, webhookSvc, frontendURL)
+	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, customerRepo, otpRepo, simulatorSvc, webhookSvc, frontendURL)
 	scenarioSvc := service.NewScenarioService(scenarioRepo)
 	logSvc := service.NewLogService(logRepo)
 	statsSvc := service.NewStatsService(statsRepo)

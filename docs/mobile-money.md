@@ -20,7 +20,7 @@ the USSD prompt approval window, timeout scenarios and provider outages.
 
 ```
 Step 1: POST /charge/mobile_money
-  { phone: "+233241234567", provider: "mtn" }
+  { "mobile_money": { "phone": "...", "provider": "mtn" } }
   ← { status: "send_otp", display_text: "Enter OTP sent to +233241***567" }
 
 Step 2: Read OTP from /control/logs

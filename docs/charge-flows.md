@@ -1,247 +1,469 @@
 # Charge Flows
 
-Payfake simulates the full multi-step charge flow for every payment channel
-exactly as Paystack does. The checkout page reads the `status` field from
-every response and renders the appropriate next step.
+All charges go through `POST /charge` — a single endpoint where the channel
+is determined by which sub-object you pass in the body. This matches the real
+Paystack API exactly.
 
 ---
 
 ## Flow Status Values
 
-| Status | Meaning | Next Action |
-|--------|---------|-------------|
+| Status | Meaning | Next Call |
+|--------|---------|-----------|
 | `send_pin` | Enter card PIN | `POST /charge/submit_pin` |
 | `send_otp` | Enter OTP | `POST /charge/submit_otp` |
 | `send_birthday` | Enter date of birth | `POST /charge/submit_birthday` |
 | `send_address` | Enter billing address | `POST /charge/submit_address` |
-| `open_url` | Complete 3DS verification | Open `three_ds_url` in checkout |
-| `pay_offline` | Approve USSD prompt | Poll transaction status |
-| `success` | Payment complete | Show success, redirect to callback |
-| `failed` | Payment declined | Show error with `error_code` |
+| `open_url` | Complete 3DS — open `url` | Navigate checkout to `data.url` |
+| `pay_offline` | Approve USSD prompt | Poll `GET /api/v1/public/transaction/verify/:ref` |
+| `success` | Payment complete | Fire webhook, update order |
+| `failed` | Payment declined | Show `data.gateway_response` to customer |
 
 ---
 
 ## Card — Local (Verve)
 
-Verve card number prefixes: `5061`, `5062`, `5063`, `6500`, `6501`
+BIN prefixes: `5061`, `5062`, `5063`, `6500`, `6501`
 
+```bash
+# Initiate
+curl -X POST http://localhost:8080/charge \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "customer@example.com",
+    "amount": 10000,
+    "card": {
+      "number": "5061000000000000",
+      "cvv": "123",
+      "expiry_month": "12",
+      "expiry_year": "2026"
+    }
+  }'
+# → { "status": true, "data": { "status": "send_pin", "reference": "TXN_xxx" } }
+
+# Submit PIN
+curl -X POST http://localhost:8080/charge/submit_pin \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx","pin":"1234"}'
+# → { "status": true, "data": { "status": "send_otp" } }
+
+# Get OTP (read from logs — no real phone needed)
+curl "http://localhost:8080/api/v1/control/otp-logs?reference=TXN_xxx" \
+  -H "Authorization: Bearer eyJ..."
+
+# Submit OTP
+curl -X POST http://localhost:8080/charge/submit_otp \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx","otp":"482931"}'
+# → { "status": true, "data": { "status": "success" } }
 ```
-Step 1: POST /charge/card
-Request:
-{
-  "access_code": "ACC_xxx",
-  "card_number": "5061000000000000",
-  "card_expiry": "12/26",
-  "cvv": "123",
-  "email": "customer@example.com"
-}
-Response: { "status": "send_pin", "display_text": "Please enter your card PIN" }
 
-Step 2: POST /charge/submit_pin
-Request: { "reference": "TXN_xxx", "pin": "1234" }
-Response: { "status": "send_otp", "display_text": "Enter the OTP sent to your phone" }
-Note: OTP generated here — read from /control/logs
+Resend OTP if needed:
 
-Step 3: POST /charge/submit_otp
-Request: { "reference": "TXN_xxx", "otp": "482931" }
-Response: { "status": "success" } or { "status": "failed", "error_code": "..." }
-Webhook: charge.success or charge.failed fires immediately
-```
-
-If the customer doesn't receive the OTP:
-```
-POST /charge/resend_otp
-Request: { "reference": "TXN_xxx" }
-Response: { "status": "send_otp", "display_text": "A new OTP has been sent" }
-Note: New OTP generated — old OTP invalidated — read new OTP from /control/logs
+```bash
+curl -X POST http://localhost:8080/charge/resend_otp \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx"}'
 ```
 
 ---
 
-## Card — International (Visa / Mastercard)
+## Card — International (Visa/Mastercard)
 
-All Visa (`4xxx`) and Mastercard (`5xxx`) cards that are not Verve ranges.
-
+```bash
+curl -X POST http://localhost:8080/charge \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "customer@example.com",
+    "amount": 10000,
+    "card": {
+      "number": "4111111111111111",
+      "cvv": "123",
+      "expiry_month": "12",
+      "expiry_year": "2026"
+    }
+  }'
+# → { "status": true, "data": {
+#     "status": "open_url",
+#     "url": "http://localhost:3000/simulate/3ds/TXN_xxx"
+#   } }
 ```
-Step 1: POST /charge/card
-Request:
-{
-  "access_code": "ACC_xxx",
-  "card_number": "4111111111111111",
-  "card_expiry": "12/26",
-  "cvv": "123",
-  "email": "customer@example.com"
-}
-Response:
-{
-  "status": "open_url",
-  "three_ds_url": "http://localhost:3000/simulate/3ds/TXN_xxx",
-  "display_text": "Complete 3D Secure verification to proceed"
-}
 
-Step 2: Checkout app navigates to three_ds_url
-The React checkout app's /simulate/3ds route shows a fake bank
-authentication page. Customer clicks "Authenticate".
+The checkout app opens `data.url`. Customer confirms. Checkout calls:
 
-Step 3: Checkout app calls POST /api/v1/public/simulate/3ds/TXN_xxx
-Response: { "status": "success" } or { "status": "failed" }
-Webhook: charge.success or charge.failed fires
+```bash
+curl -X POST http://localhost:8080/api/v1/public/simulate/3ds/TXN_xxx
+# → { "status": true, "data": { "status": "success" } }
 ```
 
 ---
 
 ## Mobile Money
 
-Supported providers: `mtn`, `vodafone`, `airteltigo`
+Providers: `mtn`, `vodafone`, `airteltigo`
 
+```bash
+# Initiate
+curl -X POST http://localhost:8080/charge \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "customer@example.com",
+    "amount": 10000,
+    "mobile_money": {
+      "phone": "+233241234567",
+      "provider": "mtn"
+    }
+  }'
+# → { "status": true, "data": { "status": "send_otp" } }
+
+# Submit OTP
+curl -X POST http://localhost:8080/charge/submit_otp \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx","otp":"291847"}'
+# → { "status": true, "data": { "status": "pay_offline" } }
+
+# Poll every 3 seconds
+curl http://localhost:8080/api/v1/public/transaction/verify/TXN_xxx
+# → { "status": true, "data": { "status": "success" } }
 ```
-Step 1: POST /charge/mobile_money
-Request:
-{
-  "access_code": "ACC_xxx",
-  "phone": "+233241234567",
-  "provider": "mtn",
-  "email": "customer@example.com"
-}
-Response:
-{
-  "status": "send_otp",
-  "display_text": "Enter the OTP sent to +233241***567"
-}
-Note: OTP generated — read from /control/logs
-
-Step 2: POST /charge/submit_otp
-Request: { "reference": "TXN_xxx", "otp": "291847" }
-Response:
-{
-  "status": "pay_offline",
-  "display_text": "Approve the payment prompt on +233241***567"
-}
-
-Step 3: Customer approves USSD prompt on their phone (simulated via delay)
-Checkout polls: GET /api/v1/public/transaction/:access_code every 3 seconds
-Webhook: charge.success or charge.failed fires after delay_ms
-```
-
-The delay is controlled by `delay_ms` in the scenario config. Default is 0 — resolves instantly. Set to 5000 for a realistic 5 second wait.
 
 ---
 
 ## Bank Transfer
 
-```
-Step 1: POST /charge/bank
-Request:
-{
-  "access_code": "ACC_xxx",
-  "bank_code": "GCB",
-  "account_number": "1234567890",
-  "email": "customer@example.com"
-}
-Response:
-{
-  "status": "send_birthday",
-  "display_text": "Enter your date of birth to verify your identity"
-}
+```bash
+# Initiate
+curl -X POST http://localhost:8080/charge \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "customer@example.com",
+    "amount": 10000,
+    "bank": {
+      "code": "GCB",
+      "account_number": "1234567890"
+    }
+  }'
+# → { "status": true, "data": { "status": "send_birthday" } }
 
-Step 2: POST /charge/submit_birthday
-Request: { "reference": "TXN_xxx", "birthday": "1990-01-15" }
-Response: { "status": "send_otp", "display_text": "Enter the OTP sent to your phone" }
-Note: OTP generated — read from /control/logs
+# Submit DOB
+curl -X POST http://localhost:8080/charge/submit_birthday \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx","birthday":"1990-01-15"}'
+# → { "status": true, "data": { "status": "send_otp" } }
 
-Step 3: POST /charge/submit_otp
-Request: { "reference": "TXN_xxx", "otp": "738291" }
-Response: { "status": "success" } or { "status": "failed" }
-Webhook: charge.success or charge.failed fires
+# Submit OTP (read from otp-logs)
+curl -X POST http://localhost:8080/charge/submit_otp \
+  -H "Authorization: Bearer sk_test_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"reference":"TXN_xxx","otp":"738291"}'
+# → { "status": true, "data": { "status": "success" } }
 ```
 
 ---
 
-## Reading OTPs During Testing
+## OTP Logs
 
-OTPs are generated server-side and stored in the OTP log table.
-They are never returned in any API response.
-
-Read the OTP for a specific transaction:
+OTPs are never returned in API responses. Read them during testing:
 
 ```bash
 curl "http://localhost:8080/api/v1/control/otp-logs?reference=TXN_xxx" \
-  -H "Authorization: Bearer <jwt>"
+  -H "Authorization: Bearer eyJ..."
 ```
 
-Response:
 ```json
 {
-  "data": {
-    "otp_logs": [
-      {
-        "id": "LOG_xxx",
-        "reference": "TXN_xxx",
-        "channel": "card",
-        "otp_code": "482931",
-        "step": "submit_pin",
-        "used": false,
-        "expires_at": "2026-04-12T00:10:00Z",
-        "created_at": "2026-04-12T00:00:00Z"
-      }
-    ]
+  "status": true,
+  "data": [
+    {
+      "reference": "TXN_xxx",
+      "otp_code": "482931",
+      "step": "submit_pin",
+      "used": false,
+      "expires_at": "2026-04-22T10:10:00Z"
+    }
+  ]
+}
+```
+
+OTPs expire after 10 minutes. Call `/charge/resend_otp` to regenerate.
+```
+
+---
+
+**`docs/api-reference.md`** — full rewrite:
+
+```markdown
+# API Reference
+
+Base URL: `https://api.payfake.co` (hosted) or `http://localhost:8080` (local)
+
+**Response envelope — identical to Paystack:**
+
+```json
+{ "status": true, "message": "...", "data": {} }
+```
+
+**Error envelope:**
+
+```json
+{
+  "status": false,
+  "message": "Validation error has occurred",
+  "errors": {
+    "email": [{ "rule": "required", "message": "Email is required" }]
   }
 }
 ```
 
-The most recent unused OTP is the one to submit. OTPs expire after 10 minutes.
-If the OTP has expired, call `resend_otp` to generate a fresh one.
+**Extra headers on every response:**
+- `X-Payfake-Code` — machine-readable result code for the dashboard
+- `X-Request-ID` — unique request ID for debugging
+
 ---
 
-## Forcing Flow Outcomes
+## Auth `/api/v1/auth`
 
-Use the scenario engine to control what happens at each step:
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/register` | None | Create merchant account |
+| POST | `/login` | None | Login |
+| POST | `/refresh` | Refresh cookie | Rotate token pair |
+| POST | `/logout` | Bearer JWT | Clear cookies |
+| GET | `/me` | Bearer JWT | Current merchant |
+| GET | `/keys` | Bearer JWT | Get pk/sk keys |
+| POST | `/keys/regenerate` | Bearer JWT | Rotate keys |
 
-```bash
-# Force all charges to fail at the OTP step
-curl -X PUT http://localhost:8080/api/v1/control/scenario \
-  -H "Authorization: Bearer <jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "force_status": "failed",
-    "error_code": "CHARGE_INVALID_OTP"
-  }'
+---
 
-# Force card PIN failure specifically
-curl -X PUT http://localhost:8080/api/v1/control/scenario \
-  -H "Authorization: Bearer <jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "force_status": "failed",
-    "error_code": "CHARGE_INVALID_PIN"
-  }'
+## Transaction `/transaction`
 
-# Force MoMo timeout
-curl -X PUT http://localhost:8080/api/v1/control/scenario \
-  -H "Authorization: Bearer <jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "force_status": "failed",
-    "error_code": "CHARGE_MOMO_TIMEOUT"
-  }'
+Auth: `Bearer sk_test_xxx`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/initialize` | Create transaction |
+| GET | `/verify/:reference` | Verify by reference |
+| GET | `/` | List (`perPage`, `page`, `status`) |
+| GET | `/:id` | Fetch by ID |
+| POST | `/:id/refund` | Refund |
+
+**Initialize request:**
+```json
+{
+  "email": "customer@example.com",
+  "amount": 10000,
+  "currency": "GHS",
+  "reference": "order-001",
+  "callback_url": "https://yourapp.com/callback"
+}
+```
+
+**Initialize response data:**
+```json
+{
+  "authorization_url": "http://localhost:3000?access_code=ACC_xxx",
+  "access_code": "ACC_xxx",
+  "reference": "TXN_xxx"
+}
+```
+
+**Verify response data:**
+```json
+{
+  "id": "TXN_xxx",
+  "domain": "test",
+  "status": "success",
+  "reference": "order-001",
+  "amount": 10000,
+  "currency": "GHS",
+  "gateway_response": "Approved",
+  "paid_at": "2026-04-22T10:00:00Z",
+  "created_at": "2026-04-22T09:59:00Z",
+  "channel": "card",
+  "fees": 150,
+  "authorization": {
+    "authorization_code": "AUTH_xxx",
+    "bin": "506100",
+    "last4": "0000",
+    "exp_month": "12",
+    "exp_year": "2026",
+    "card_type": "verve",
+    "bank": "TEST BANK",
+    "brand": "verve",
+    "reusable": false,
+    "signature": "SIG_xxx",
+    "country_code": "GH"
+  },
+  "customer": {
+    "id": "CUS_xxx",
+    "customer_code": "CUS_xxx",
+    "email": "customer@example.com",
+    "first_name": "Kofi",
+    "last_name": "Mensah"
+  }
+}
+```
+
+**List meta:**
+```json
+{ "total": 142, "skipped": 0, "per_page": 50, "page": 1, "pageCount": 3 }
 ```
 
 ---
 
-## Public Endpoints (Checkout Page)
+## Charge `/charge`
 
-All charge flow endpoints have public equivalents under `/api/v1/public/`
-that the React checkout page uses. These authenticate via `access_code`
-in the request body — no secret key needed in the browser.
+Auth: `Bearer sk_test_xxx`
 
-| Endpoint | Public Equivalent |
-|----------|-------------------|
-| `POST /charge/card` | `POST /public/charge/card` |
-| `POST /charge/mobile_money` | `POST /public/charge/mobile_money` |
-| `POST /charge/bank` | `POST /public/charge/bank` |
-| `POST /charge/submit_pin` | `POST /public/charge/submit_pin` |
-| `POST /charge/submit_otp` | `POST /public/charge/submit_otp` |
-| `POST /charge/submit_birthday` | `POST /public/charge/submit_birthday` |
-| `POST /charge/submit_address` | `POST /public/charge/submit_address` |
-| `POST /charge/resend_otp` | `POST /public/charge/resend_otp` |
-| `POST /simulate/3ds/:reference` | `POST /public/simulate/3ds/:reference` |
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Initiate charge (card/mobile_money/bank) |
+| POST | `/submit_pin` | Submit card PIN |
+| POST | `/submit_otp` | Submit OTP |
+| POST | `/submit_birthday` | Submit date of birth |
+| POST | `/submit_address` | Submit billing address |
+| POST | `/resend_otp` | Resend OTP |
+| GET | `/:reference` | Fetch charge state |
+
+**Charge request — card:**
+```json
+{
+  "email": "customer@example.com",
+  "amount": 10000,
+  "card": {
+    "number": "5061000000000000",
+    "cvv": "123",
+    "expiry_month": "12",
+    "expiry_year": "2026"
+  }
+}
+```
+
+**Charge request — mobile money:**
+```json
+{
+  "email": "customer@example.com",
+  "amount": 10000,
+  "mobile_money": { "phone": "+233241234567", "provider": "mtn" }
+}
+```
+
+**Charge request — bank:**
+```json
+{
+  "email": "customer@example.com",
+  "amount": 10000,
+  "bank": { "code": "GCB", "account_number": "1234567890" },
+  "birthday": "1990-01-15"
+}
+```
+
+**Charge response data (all steps):**
+```json
+{
+  "status": "send_pin",
+  "reference": "TXN_xxx",
+  "display_text": "Please enter your PIN",
+  "amount": 10000,
+  "currency": "GHS",
+  "channel": "card"
+}
+```
+
+For `open_url`:
+```json
+{
+  "status": "open_url",
+  "url": "http://localhost:3000/simulate/3ds/TXN_xxx",
+  "display_text": "Please complete authentication on the provided url"
+}
+```
+
+---
+
+## Customer `/customer`
+
+Auth: `Bearer sk_test_xxx`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/` | Create customer |
+| GET | `/` | List (`perPage`, `page`) |
+| GET | `/:code` | Fetch |
+| PUT | `/:code` | Update |
+| GET | `/:code/transactions` | Customer transactions |
+
+---
+
+## Merchant `/api/v1/merchant`
+
+Auth: Bearer JWT
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Get profile |
+| PUT | `/` | Update profile |
+| PUT | `/password` | Change password |
+| GET | `/webhook` | Get webhook URL |
+| POST | `/webhook` | Set webhook URL |
+| POST | `/webhook/test` | Fire test webhook (5/min limit) |
+
+---
+
+## Control `/api/v1/control`
+
+Auth: Bearer JWT
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/stats` | Overview + 7-day activity |
+| GET | `/transactions` | Transaction list with search |
+| GET | `/customers` | Customer list |
+| GET | `/scenario` | Scenario config |
+| PUT | `/scenario` | Update scenario |
+| POST | `/scenario/reset` | Reset to defaults |
+| GET | `/webhooks` | Webhook events |
+| POST | `/webhooks/:id/retry` | Retry delivery |
+| GET | `/webhooks/:id/attempts` | Delivery history |
+| POST | `/transactions/:ref/force` | Force outcome |
+| GET | `/logs` | Request/response logs |
+| DELETE | `/logs` | Clear logs |
+| GET | `/otp-logs` | OTP codes (`?reference=TXN_xxx`) |
+
+**Scenario config:**
+```json
+{
+  "failure_rate": 0.3,
+  "delay_ms": 2000,
+  "force_status": "failed",
+  "error_code": "CHARGE_INSUFFICIENT_FUNDS"
+}
+```
+
+---
+
+## Public `/api/v1/public`
+
+No auth, access_code authenticates.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/transaction/verify/:reference` | Poll status (MoMo) |
+| GET | `/transaction/:access_code` | Load checkout |
+| POST | `/charge` | Initiate (with `access_code` in body) |
+| POST | `/charge/submit_pin` | Submit PIN |
+| POST | `/charge/submit_otp` | Submit OTP |
+| POST | `/charge/submit_birthday` | Submit DOB |
+| POST | `/charge/submit_address` | Submit address |
+| POST | `/charge/resend_otp` | Resend OTP |
+| POST | `/simulate/3ds/:reference` | Complete 3DS |
+```

@@ -42,6 +42,24 @@ func generate(prefix string) string {
 	return fmt.Sprintf("%s_%s", prefix, short)
 }
 
+const (
+	PrefixReference = "ref"
+)
+
+// NewReference generates a unique transaction reference.
+// Lowercase, URL-safe, matches the format developers pass to Paystack.
+func NewReference() string {
+	raw := strings.ReplaceAll(uuid.New().String(), "-", "")
+	return strings.ToLower(raw[:16])
+}
+
+// NewCustomerCode generates a customer code in the CUS_xxx format.
+// Identical to NewCustomerID, kept separate so the semantics
+// are clear at the call site.
+func NewCustomerCode() string {
+	return generate(PrefixCustomer)
+}
+
 // Each exported function below is the public API for generating
 // IDs for a specific entity. Callers never pass a prefix manually —
 // they call the typed function for the entity they're creating.

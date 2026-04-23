@@ -80,7 +80,7 @@ class PaystackClient:
         })
 
     def initialize_transaction(self, email, amount, **kwargs):
-        resp = self.session.post(f"{self.base_url}/api/v1/transaction/initialize", json={
+        resp = self.session.post(f"{self.base_url}/transaction/initialize", json={
             "email": email,
             "amount": amount,
             **kwargs,
@@ -88,7 +88,7 @@ class PaystackClient:
         return resp.json()
 
     def verify_transaction(self, reference):
-        resp = self.session.get(f"{self.base_url}/api/v1/transaction/verify/{reference}")
+        resp = self.session.get(f"{self.base_url}/transaction/verify/{reference}")
         return resp.json()
 ```
 
@@ -153,10 +153,10 @@ const client = axios.create({
 })
 
 export const initializeTransaction = (email, amount, options = {}) =>
-  client.post("/api/v1/transaction/initialize", { email, amount, ...options })
+  client.post("/transaction/initialize", { email, amount, ...options })
 
 export const verifyTransaction = (reference) =>
-  client.get(`/api/v1/transaction/verify/${reference}`)
+  client.get(`/transaction/verify/${reference}`)
 ```
 
 **Webhook handler:**
@@ -230,7 +230,7 @@ func New() *Client {
 func (c *Client) InitializeTransaction(email string, amount int64) (map[string]any, error) {
     body, _ := json.Marshal(map[string]any{"email": email, "amount": amount})
     req, _ := http.NewRequest("POST",
-        c.baseURL+"/api/v1/transaction/initialize",
+        c.baseURL+"/transaction/initialize",
         bytes.NewBuffer(body))
     req.Header.Set("Authorization", "Bearer "+c.secretKey)
     req.Header.Set("Content-Type", "application/json")

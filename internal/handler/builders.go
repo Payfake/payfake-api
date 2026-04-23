@@ -140,18 +140,6 @@ func buildChargeFlowData(out *service.ChargeFlowResponse) gin.H {
 	return data
 }
 
-// buildPaystackMeta builds Paystack's pagination meta shape.
-// Real Paystack: { total, skipped, per_page, page, pageCount }
-func buildPaystackMeta(total int64, page, perPage int) gin.H {
-	return gin.H{
-		"total":     total,
-		"skipped":   (page - 1) * perPage,
-		"per_page":  perPage,
-		"page":      page,
-		"pageCount": (total + int64(perPage) - 1) / int64(perPage),
-	}
-}
-
 // gatewayResponse returns the human-readable gateway response for a status.
 // Matches Paystack's gateway_response field values.
 func gatewayResponse(status domain.TransactionStatus) string {

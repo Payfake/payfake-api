@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"errors"
+
 	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"gorm.io/gorm"
 )
 
@@ -90,4 +93,29 @@ func (r *CustomerRepository) EmailExists(email, merchantID string) (bool, error)
 		Where("email = ? AND merchant_id = ?", email, merchantID).
 		Count(&count)
 	return count > 0, result.Error
+}
+
+// FindOrCreate finds a customer by email or creates one if they don't exist.
+// Used by inline charge creation, Paystack creates customers automatically
+// when you charge an email that hasn't been seen before.
+func (r *CustomerRepository) FindOrCreate(merchantID, email string) (*domain.Customer, error) {
+	var customer domain.Customer
+	result := r.db.Where("merchant_id = ? AND email = ?", merchantID, email).First(&customer)
+	if result.Error == nil {
+		return &customer, nil
+	}
+	if !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		return nil, result.Error
+	}
+
+	customer = domain.Customer{
+		Base:       domain.Base{ID: uid.NewCustomerID()},
+		MerchantID: merchantID,
+		Email:      email,
+		Code:       uid.NewCustomerCode(),
+	}
+	if err := r.db.Create(&customer).Error; err != nil {
+		return nil, err
+	}
+	return &customer, nil
 }

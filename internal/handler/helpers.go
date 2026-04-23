@@ -34,6 +34,13 @@ func parseBindingErrors(err error) map[string][]response.ValidationDetail {
 	}
 }
 
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 // field builds a single-field error map, shorthand for the common case
 // of one field, one rule violation.
 func field(name, rule, message string) map[string][]response.ValidationDetail {
@@ -56,7 +63,7 @@ func ruleMessage(e validator.FieldError) string {
 	f := toSnakeCase(e.Field())
 	switch e.Tag() {
 	case "required":
-		return strings.Title(f) + " is required"
+		return capitalize(f) + " is required"
 	case "email":
 		return "Must be a valid email address"
 	case "min":

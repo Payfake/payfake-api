@@ -182,11 +182,10 @@ func (h *TransactionHandler) List(c *gin.Context) {
 		data = []gin.H{}
 	}
 
-	response.Success(c, http.StatusOK, "Transactions retrieved",
-		response.TransactionListFetched, gin.H{
-			"data": data,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Transactions retrieved",
+		response.TransactionListFetched,
+		data,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // Refund handles POST /transaction/:id/refund

@@ -17,6 +17,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 
 ---
+
+## [0.3.0] — 2026-04-22
+
+### Breaking — Paystack-compatible rewrite
+
+**Response envelope**
+- `status` is now boolean `true`/`false` (was string `"success"`/`"error"`)
+- `errors` is now keyed object `{ field: [{ rule, message }] }` (was array)
+- `metadata` and `code` moved to `X-Payfake-Code` and `X-Request-ID` headers
+- Response body is 100% Paystack-compatible — zero code changes to switch
+
+**URL structure**
+- Paystack routes no longer have `/api/v1` prefix
+- `/transaction/*`, `/charge/*`, `/customer/*` now at root level
+- Payfake-specific routes keep `/api/v1` prefix
+
+**Charge endpoint**
+- `POST /charge` — single unified endpoint (was `/charge/card|mobile_money|bank`)
+- Channel detected from body: `card{}`, `mobile_money{}`, or `bank{}`
+- Supports inline transaction creation (no prior `/transaction/initialize` required)
+
+**Transaction response**
+- `domain`, `gateway_response`, `authorization` object added everywhere
+- `authorization` includes `authorization_code`, `bin`, `last4`, `brand`, `bank`
+
+**List responses**
+- `data` is array directly, `meta` is sibling (was nested `data.data`)
+- Pagination: `{ total, skipped, per_page, page, pageCount }` matching Paystack
+
+**Inline transaction creation**
+- `POST /charge` can now be called with `email` + `amount` directly
+- No prior `/transaction/initialize` required — customer created automatically
+- Matches real Paystack behavior exactly
+
+**Bug fixes**
+- `strings.Title` deprecated — replaced with custom `capitalize()`
+- `domain.JSON` type added with proper JSONB scanning
+- `findOrCreateTransaction` replaces `findPendingTransaction`
+- List response nesting corrected to match Paystack shape
+- `ControlHandler.GetStats` stub removed — routes to `StatsHandler` correctly
+```
+
+---
+
+
 ## [0.2.0] — 2026-04-19
 
 ### Added

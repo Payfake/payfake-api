@@ -204,6 +204,7 @@ func (h *ChargeHandler) Charge(c *gin.Context) {
 			CardExpiry: expiryFromCard(req.Card.ExpiryMonth, req.Card.ExpiryYear),
 			CardCVV:    req.Card.CVV,
 			Email:      req.Email,
+			Amount:     req.Amount,
 			Reference:  req.Reference,
 		})
 		if err != nil {

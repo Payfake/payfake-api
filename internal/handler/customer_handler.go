@@ -100,11 +100,10 @@ func (h *CustomerHandler) List(c *gin.Context) {
 		data = []gin.H{}
 	}
 
-	response.Success(c, http.StatusOK, "Customers retrieved",
-		response.CustomerListFetched, gin.H{
-			"data": data,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Customers retrieved",
+		response.CustomerListFetched,
+		data,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // Fetch handles GET /customer/:code
@@ -210,9 +209,8 @@ func (h *CustomerHandler) Transactions(c *gin.Context) {
 		data = []gin.H{}
 	}
 
-	response.Success(c, http.StatusOK, "Customer transactions retrieved",
-		response.TransactionListFetched, gin.H{
-			"data": data,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Customer transactions retrieved",
+		response.TransactionListFetched,
+		data,
+		response.BuildPaystackMeta(total, page, perPage))
 }

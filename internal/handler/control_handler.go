@@ -58,11 +58,6 @@ func (h *ControlHandler) merchantIDFromJWT(c *gin.Context) (string, bool) {
 	return middleware.GetMerchantIDFromJWT(c, h.authSvc)
 }
 
-// GetStats handles GET /api/v1/control/stats
-func (h *ControlHandler) GetStats(c *gin.Context) {
-	// stats handler is in stats_handler.go, this is just a placeholder
-}
-
 // ListTransactions handles GET /api/v1/control/transactions
 func (h *ControlHandler) ListTransactions(c *gin.Context) {
 	merchantID, ok := h.merchantIDFromJWT(c)
@@ -89,11 +84,10 @@ func (h *ControlHandler) ListTransactions(c *gin.Context) {
 		data = []gin.H{}
 	}
 
-	response.Success(c, http.StatusOK, "Transactions retrieved",
-		response.TransactionListFetched, gin.H{
-			"data": data,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Transactions retrieved",
+		response.TransactionListFetched,
+		data,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // ListCustomers handles GET /api/v1/control/customers
@@ -120,11 +114,10 @@ func (h *ControlHandler) ListCustomers(c *gin.Context) {
 		data = []gin.H{}
 	}
 
-	response.Success(c, http.StatusOK, "Customers retrieved",
-		response.CustomerListFetched, gin.H{
-			"data": data,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Customers retrieved",
+		response.CustomerListFetched,
+		data,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // GetScenario handles GET /api/v1/control/scenario
@@ -229,11 +222,10 @@ func (h *ControlHandler) ListWebhooks(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Webhooks retrieved",
-		response.WebhookListFetched, gin.H{
-			"data": webhooks,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Webhooks retrieved",
+		response.WebhookListFetched,
+		webhooks,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // RetryWebhook handles POST /api/v1/control/webhooks/:id/retry
@@ -342,11 +334,10 @@ func (h *ControlHandler) GetLogs(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, http.StatusOK, "Logs retrieved",
-		response.LogsFetched, gin.H{
-			"data": logs,
-			"meta": buildPaystackMeta(total, page, perPage),
-		})
+	response.SuccessList(c, "Logs retrieved",
+		response.LogsFetched,
+		logs,
+		response.BuildPaystackMeta(total, page, perPage))
 }
 
 // ClearLogs handles DELETE /api/v1/control/logs
@@ -397,6 +388,6 @@ func (h *ControlHandler) GetOTPLogs(c *gin.Context) {
 	response.Success(c, http.StatusOK, "OTP logs retrieved",
 		response.OTPLogsFetched, gin.H{
 			"data": logs,
-			"meta": buildPaystackMeta(total, page, perPage),
+			"meta": response.BuildPaystackMeta(total, page, perPage),
 		})
 }

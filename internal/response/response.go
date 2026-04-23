@@ -31,6 +31,19 @@ type ValidationDetail struct {
 	Message string `json:"message"`
 }
 
+// BuildPaystackMeta builds Paystack's pagination meta shape.
+// { "total", "skipped", "perPage", "page", "pageCount" }
+// Exported so handlers can use it directly with SuccessList.
+func BuildPaystackMeta(total int64, page, perPage int) gin.H {
+	return gin.H{
+		"total":     total,
+		"skipped":   (page - 1) * perPage,
+		"perPage":   perPage,
+		"page":      page,
+		"pageCount": (total + int64(perPage) - 1) / int64(perPage),
+	}
+}
+
 // Success writes a boolean-true Paystack-compatible success response.
 // The Payfake response code travels in the X-Payfake-Code header so the
 // dashboard and control panel can read it without the body deviating from
@@ -104,4 +117,22 @@ func getRequestID(c *gin.Context) string {
 		return s
 	}
 	return ""
+}
+
+// SuccessList writes a Paystack-compatible list response where data is
+// the array directly and meta is a sibling field at the top level.
+// Real Paystack list shape:
+//
+//	{ "status": true, "message": "...", "data": [...], "meta": { ... } }
+//
+// This is different from non-list responses where data is an object.
+func SuccessList(c *gin.Context, message string, code Code, data any, meta gin.H) {
+	c.Header("X-Payfake-Code", string(code))
+	c.Header("X-Request-ID", getRequestID(c))
+	c.JSON(http.StatusOK, gin.H{
+		"status":  true,
+		"message": message,
+		"data":    data,
+		"meta":    meta,
+	})
 }
