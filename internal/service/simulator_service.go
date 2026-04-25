@@ -1,6 +1,7 @@
 package service
 
 import (
+	"log"
 	"math/rand"
 	"time"
 
@@ -51,7 +52,12 @@ func (s *SimulatorService) ResolveOutcome(merchantID string, channel domain.Tran
 	// This means Payfake works out of the box without any configuration.
 	scenario, err := s.scenarioRepo.FindByMerchantID(merchantID)
 	if err != nil || scenario == nil {
+		// This is the bug if it logs, scenario not found for this merchant
+		log.Printf("[simulator] no scenario for merchant %s, using defaults", merchantID)
 		scenario = s.defaultScenario()
+	} else {
+		log.Printf("[simulator] merchant=%s force_status=%q failure_rate=%v",
+			merchantID, scenario.ForceStatus, scenario.FailureRate)
 	}
 
 	// Apply the configured delay first, before we resolve the outcome.

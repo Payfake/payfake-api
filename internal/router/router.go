@@ -28,6 +28,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	})
 	r.Use(middleware.Logger())
 	r.Use(middleware.RateLimit(200, time.Minute))
+	r.Use(middleware.PublicCORS())
 
 	isProd := appEnv == "production"
 
@@ -176,7 +177,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	// Public checkout (no auth, access_code authenticates)
 	// Static path registered before param path to avoid Gin conflict.
 	public := v1.Group("/public")
-	public.Use(middleware.PublicCORS())
+
 	{
 		public.GET("/transaction/verify/:reference", transactionHandler.PublicVerify)
 		public.GET("/transaction/:access_code", transactionHandler.PublicFetchByAccessCode)

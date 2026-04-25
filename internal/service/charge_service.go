@@ -14,13 +14,26 @@ import (
 
 type ChargeService struct {
 	chargeRepo      *repository.ChargeRepository
-	transactionRepo *repository.TransactionRepository
+	transactionRepo chargeTransactionRepository
 	merchantRepo    *repository.MerchantRepository
-	customerRepo    *repository.CustomerRepository
+	customerRepo    chargeCustomerRepository
 	otpRepo         *repository.OTPRepository
 	simulatorSvc    *SimulatorService
 	webhookSvc      *WebhookService
 	frontendURL     string
+}
+
+type chargeTransactionRepository interface {
+	FindByReference(string, string) (*domain.Transaction, error)
+	FindByAccessCode(string) (*domain.Transaction, error)
+	UpdateStatus(string, domain.TransactionStatus, any) error
+	FindByID(string, string) (*domain.Transaction, error)
+	Create(*domain.Transaction) error
+	UpdateChannel(string, domain.TransactionChannel) error
+}
+
+type chargeCustomerRepository interface {
+	FindOrCreate(string, string) (*domain.Customer, error)
 }
 
 func NewChargeService(
@@ -140,6 +153,35 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		return nil, err
 	}
 
+	// Check scenario immediately on charge initiation.
+	// If force_status is set to failed we fail before creating the charge
+	// and before starting any flow. This is the correct behavior,
+	// developers testing failure scenarios shouldn't have to complete
+	// the entire PIN → OTP flow just to get a failure.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
+	if result.Status == domain.TransactionFailed {
+		// Create the charge in failed state so it's visible in logs
+		charge := &domain.Charge{
+			Base:            domain.Base{ID: uid.NewChargeID()},
+			MerchantID:      input.MerchantID,
+			TransactionID:   tx.ID,
+			Channel:         domain.ChannelCard,
+			Status:          domain.TransactionFailed,
+			FlowStatus:      domain.FlowFailed,
+			CardLast4:       safeCardLast4(input.CardNumber),
+			CardBrand:       detectCardBrand(input.CardNumber),
+			CardType:        detectCardType(input.CardNumber),
+			ChargeErrorCode: result.ErrorCode,
+		}
+		if err := s.chargeRepo.Create(charge); err != nil {
+			return nil, fmt.Errorf("failed to create charge: %w", err)
+		}
+		if err := s.setTransactionChannel(tx, domain.ChannelCard); err != nil {
+			return nil, err
+		}
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
 	cardType := detectCardType(input.CardNumber)
 
 	charge := &domain.Charge{
@@ -197,6 +239,32 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 		return nil, err
 	}
 
+	// Check scenario on initiation.
+	// MoMo failure can happen immediately, the provider is unavailable,
+	// the number is invalid, etc. No point sending an OTP if we know
+	// the outcome is forced to failed.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelMobileMoney)
+	if result.Status == domain.TransactionFailed {
+		charge := &domain.Charge{
+			Base:            domain.Base{ID: uid.NewChargeID()},
+			MerchantID:      input.MerchantID,
+			TransactionID:   tx.ID,
+			Channel:         domain.ChannelMobileMoney,
+			Status:          domain.TransactionFailed,
+			FlowStatus:      domain.FlowFailed,
+			MomoPhone:       input.Phone,
+			MomoProvider:    input.Provider,
+			ChargeErrorCode: result.ErrorCode,
+		}
+		if err := s.chargeRepo.Create(charge); err != nil {
+			return nil, fmt.Errorf("failed to create charge: %w", err)
+		}
+		if err := s.setTransactionChannel(tx, domain.ChannelMobileMoney); err != nil {
+			return nil, err
+		}
+		return s.failCharge(charge, result.ErrorCode)
+	}
+
 	otpCode, err := otp.GenerateOTP()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
@@ -243,6 +311,29 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// Check scenario on initiation.
+	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelBankTransfer)
+	if result.Status == domain.TransactionFailed {
+		charge := &domain.Charge{
+			Base:              domain.Base{ID: uid.NewChargeID()},
+			MerchantID:        input.MerchantID,
+			TransactionID:     tx.ID,
+			Channel:           domain.ChannelBankTransfer,
+			Status:            domain.TransactionFailed,
+			FlowStatus:        domain.FlowFailed,
+			BankCode:          input.BankCode,
+			BankAccountNumber: input.AccountNumber,
+			ChargeErrorCode:   result.ErrorCode,
+		}
+		if err := s.chargeRepo.Create(charge); err != nil {
+			return nil, fmt.Errorf("failed to create charge: %w", err)
+		}
+		if err := s.setTransactionChannel(tx, domain.ChannelBankTransfer); err != nil {
+			return nil, err
+		}
+		return s.failCharge(charge, result.ErrorCode)
 	}
 
 	charge := &domain.Charge{
@@ -649,29 +740,18 @@ func (s *ChargeService) resolveMomoAsync(charge *domain.Charge, reference, merch
 func (s *ChargeService) findOrCreateTransaction(
 	accessCode, reference, merchantID, email string, amount int64,
 ) (*domain.Transaction, error) {
-	// Try access_code first
-	if accessCode != "" {
-		tx, err := s.transactionRepo.FindByAccessCode(accessCode)
-		if err == nil {
-			if tx.Status != domain.TransactionPending {
-				return nil, ErrTransactionNotPending
-			}
-			return tx, nil
-		}
+	tx, hadLookupInput, err := s.findPendingTransaction(accessCode, reference, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	if tx != nil {
+		return tx, nil
+	}
+	if hadLookupInput {
+		return nil, ErrTransactionNotFound
 	}
 
-	// Try reference
-	if reference != "" {
-		tx, err := s.transactionRepo.FindByReference(reference, merchantID)
-		if err == nil {
-			if tx.Status != domain.TransactionPending {
-				return nil, ErrTransactionNotPending
-			}
-			return tx, nil
-		}
-	}
-
-	// Neither provided — create inline transaction
+	// Neither provided, create inline transaction
 	if email == "" || amount <= 0 {
 		if email == "" {
 			return nil, ErrTransactionNotFound
@@ -684,7 +764,7 @@ func (s *ChargeService) findOrCreateTransaction(
 		return nil, fmt.Errorf("failed to resolve customer: %w", err)
 	}
 
-	tx := &domain.Transaction{
+	tx = &domain.Transaction{
 		Base:       domain.Base{ID: uid.NewTransactionID()},
 		MerchantID: merchantID,
 		CustomerID: customer.ID,
@@ -704,6 +784,40 @@ func (s *ChargeService) findOrCreateTransaction(
 
 	tx.Customer = *customer
 	return tx, nil
+}
+
+func (s *ChargeService) findPendingTransaction(
+	accessCode, reference, merchantID string,
+) (*domain.Transaction, bool, error) {
+	hadLookupInput := accessCode != "" || reference != ""
+
+	if accessCode != "" {
+		tx, err := s.transactionRepo.FindByAccessCode(accessCode)
+		if err == nil {
+			if tx.Status != domain.TransactionPending {
+				return nil, true, ErrTransactionNotPending
+			}
+			return tx, true, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, true, fmt.Errorf("failed to find transaction by access code: %w", err)
+		}
+	}
+
+	if reference != "" {
+		tx, err := s.transactionRepo.FindByReference(reference, merchantID)
+		if err == nil {
+			if tx.Status != domain.TransactionPending {
+				return nil, true, ErrTransactionNotPending
+			}
+			return tx, true, nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, true, fmt.Errorf("failed to find transaction by reference: %w", err)
+		}
+	}
+
+	return nil, hadLookupInput, nil
 }
 
 // GetMerchantByAccessCodeAndReference validates a public charge-step request.
