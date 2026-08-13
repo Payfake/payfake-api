@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only reads source code. Declaring this explicitly prevents a
+# future repository-level permission change from silently granting CI jobs
+# write access to pull requests, packages, or repository contents.
+permissions:
+  contents: read
+
+# A newer commit makes an older run irrelevant. Cancelling superseded work
+# gives developers faster feedback and avoids spending runner time testing a
+# revision that can no longer be merged as-is.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Format, vet, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go mod verify
+
+          # Running tidy and checking the resulting diff catches dependencies
+          # that were added or removed in code without updating both module
+          # files. CI never commits this mutation; it only reports the drift.
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          # Read one path at a time instead of relying on Bash's mapfile. This
+          # keeps the exact check runnable on macOS's older system Bash as well
+          # as on GitHub's Linux runner, and quoting each path handles spaces.
+          unformatted_files="$(
+            while IFS= read -r go_file; do
+              gofmt -l "${go_file}"
+            done < <(git ls-files '*.go')
+          )"
+          if [[ -n "${unformatted_files}" ]]; then
+            printf 'The following Go files need gofmt:\n%s\n' "${unformatted_files}"
+            exit 1
+          fi
+
+      - name: Run static analysis
+        run: go vet ./...
+
+      - name: Build all packages
+        run: go build ./...
+
+  tests:
+    name: Tests with race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The race detector is important for this API because charge finalization,
+      # refresh rotation, rate limiting, and webhook retries all have concurrent
+      # execution paths that ordinary unit-test runs cannot fully validate.
+      - name: Run test suite
+        run: go test -count=1 -race ./...
+
+  postgres-smoke:
+    name: PostgreSQL migration and health smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: payfake_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d payfake_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      APP_NAME: payfake-ci
+      APP_ENV: production
+      APP_PORT: "18080"
+      FRONTEND_URL: http://localhost:5173
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: payfake_ci
+      DB_SSLMODE: disable
+      JWT_SECRET: payfake-ci-only-secret-at-least-32-characters
+      JWT_ACCESS_EXPIRY_MINUTES: "15"
+      JWT_REFRESH_EXPIRY_DAYS: "7"
+      GIN_MODE: release
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Start API and verify migrations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go build -o "${RUNNER_TEMP}/payfake-api" ./cmd/api
+          "${RUNNER_TEMP}/payfake-api" > "${RUNNER_TEMP}/payfake-api.log" 2>&1 &
+          api_pid=$!
+
+          # Always stop the background server, including when startup or the
+          # health check fails, so the job does not hide the original failure
+          # behind a lingering process during runner cleanup.
+          cleanup() {
+            kill -TERM "${api_pid}" 2>/dev/null || true
+            wait "${api_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:18080/health > /dev/null; then
+              exit 0
+            fi
+
+            if ! kill -0 "${api_pid}" 2>/dev/null; then
+              echo "The API exited before becoming healthy."
+              cat "${RUNNER_TEMP}/payfake-api.log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "The API did not become healthy within 30 seconds."
+          cat "${RUNNER_TEMP}/payfake-api.log"
+          exit 1
+
+  container:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      # Building without pushing verifies the multi-stage Dockerfile and keeps
+      # registry credentials out of pull-request workflows. Image publication
+      # can be added later as a separate release workflow with narrower trust.
+      - name: Build production image
+        run: docker build --tag payfake-api:ci .
