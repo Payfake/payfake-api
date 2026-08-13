@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
 
 	"github.com/GordenArcher/godenv"
 )
@@ -80,6 +82,21 @@ func Load() (*Config, error) {
 func (c *Config) validate() error {
 	if c.JWT.Secret == "" {
 		return fmt.Errorf("JWT_SECRET is required")
+	}
+	if c.App.Env == "production" && len(c.JWT.Secret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be at least 32 characters in production")
+	}
+	accessMinutes, err := strconv.Atoi(c.JWT.AccessExpiryMinutes)
+	if err != nil || accessMinutes <= 0 {
+		return fmt.Errorf("JWT_ACCESS_EXPIRY_MINUTES must be a positive integer")
+	}
+	refreshDays, err := strconv.Atoi(c.JWT.RefreshExpiryDays)
+	if err != nil || refreshDays <= 0 {
+		return fmt.Errorf("JWT_REFRESH_EXPIRY_DAYS must be a positive integer")
+	}
+	frontend, err := url.ParseRequestURI(c.App.FrontendURL)
+	if err != nil || (frontend.Scheme != "http" && frontend.Scheme != "https") || frontend.Hostname() == "" {
+		return fmt.Errorf("FRONTEND_URL must be an absolute http or https URL")
 	}
 	// if c.Database.Password == "" {
 	// 	return fmt.Errorf("DB_PASSWORD is required")

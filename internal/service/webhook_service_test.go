@@ -23,7 +23,7 @@ type fakeWebhookRepo struct {
 	attemptListErr error
 }
 
-func (f *fakeWebhookRepo) CreateEvent(*domain.WebhookEvent) error { return nil }
+func (f *fakeWebhookRepo) CreateEvent(*domain.WebhookEvent) (bool, error) { return true, nil }
 
 func (f *fakeWebhookRepo) CreateAttempt(attempt *domain.WebhookAttempt) error {
 	f.attempts = append(f.attempts, attempt)

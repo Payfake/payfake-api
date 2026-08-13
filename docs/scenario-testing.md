@@ -52,7 +52,7 @@ curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -d '{"delay_ms": 2000}'
 ```
 
-### Force PIN failure
+### Force a charge failure with a PIN-related code
 ```bash
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Authorization: Bearer <jwt>" \
@@ -60,7 +60,7 @@ curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -d '{"force_status": "failed", "error_code": "CHARGE_INVALID_PIN"}'
 ```
 
-### Force OTP failure
+### Force a charge failure with an OTP-related code
 ```bash
 curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Authorization: Bearer <jwt>" \
@@ -75,6 +75,12 @@ curl -X PUT http://localhost:8080/api/v1/control/scenario \
   -H "Content-Type: application/json" \
   -d '{"force_status": "failed", "error_code": "CHARGE_INSUFFICIENT_FUNDS"}'
 ```
+
+The scenario outcome is sampled once when the charge starts. A forced failure
+therefore reaches its terminal result without waiting for the PIN or OTP form.
+When `delay_ms` is configured, that delay is still applied once before returning
+the terminal response. Sampling once keeps `failure_rate` equal to the configured
+probability instead of compounding it across a multi-step flow.
 
 ### Simulate MoMo timeout (customer ignores prompt)
 ```bash

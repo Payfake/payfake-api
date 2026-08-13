@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/payfake/payfake-api/internal/domain"
@@ -90,10 +91,15 @@ func buildAuthorization(tx *domain.Transaction, charge *domain.Charge) gin.H {
 
 	switch tx.Channel {
 	case domain.ChannelCard:
+		expiry := strings.Split(charge.CardExpiry, "/")
+		expMonth, expYear := "", ""
+		if len(expiry) == 2 {
+			expMonth, expYear = expiry[0], "20"+expiry[1]
+		}
 		auth["bin"] = binFromLast4(charge.CardLast4)
 		auth["last4"] = charge.CardLast4
-		auth["exp_month"] = "12"
-		auth["exp_year"] = "2026"
+		auth["exp_month"] = expMonth
+		auth["exp_year"] = expYear
 		auth["card_type"] = charge.CardBrand
 		auth["bank"] = "TEST BANK"
 		auth["brand"] = charge.CardBrand

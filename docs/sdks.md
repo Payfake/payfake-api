@@ -78,7 +78,7 @@ tx, err := client.Transaction.Initialize(ctx, payfake.InitializeInput{
 // Charge, local Verve card
 charge, err := client.Charge.Card(ctx, payfake.ChargeCardInput{
     AccessCode: tx.AccessCode,
-    CardNumber: "5061000000000000",
+    CardNumber: "5061000000000005",
     CardExpiry: "12/26",
     CVV:        "123",
     Email:      "customer@example.com",

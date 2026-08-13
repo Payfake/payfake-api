@@ -76,7 +76,7 @@ Identical to Paystack:
   "status": true,
   "message": "Authorization URL created",
   "data": {
-    "authorization_url": "http://localhost:3000?access_code=ACC_xxx",
+    "authorization_url": "http://localhost:5173/ACC_xxx",
     "access_code": "ACC_xxx",
     "reference": "TXN_xxx"
   }
@@ -111,10 +111,10 @@ curl -X POST http://localhost:8080/charge \
     "email": "customer@example.com",
     "amount": 10000,
     "card": {
-      "number": "5061000000000000",
+      "number": "5061000000000005",
       "cvv": "123",
       "expiry_month": "12",
-      "expiry_year": "2026"
+      "expiry_year": "2030"
     }
   }'
 # → { "data": { "status": "send_pin" } }
@@ -151,7 +151,7 @@ curl -X POST http://localhost:8080/charge \
       "number": "4111111111111111",
       "cvv": "123",
       "expiry_month": "12",
-      "expiry_year": "2026"
+      "expiry_year": "2030"
     }
   }'
 # → { "data": { "status": "open_url", "url": "http://localhost:3000/simulate/3ds/TXN_xxx" } }

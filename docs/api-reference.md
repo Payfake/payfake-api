@@ -81,7 +81,7 @@ Auth: `Bearer sk_test_xxx`
 ```json
 {
   "data": {
-    "authorization_url": "http://localhost:3000/ACC_xxx",
+    "authorization_url": "http://localhost:5173/ACC_xxx",
     "access_code": "ACC_xxxxxxxxxxxx",
     "reference": "TXN_xxxxxxxxxxxx"
   }

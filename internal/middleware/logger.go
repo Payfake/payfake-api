@@ -9,11 +9,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/payfake/payfake-api/internal/domain"
+	"github.com/payfake/payfake-api/pkg/uid"
 	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
 )
 
 const maxLoggedBodyLength = 2048
 const maxLoggedRequestPreviewBytes = 64 << 10
+const maxCapturedResponseBytes = 64 << 10
 
 var redactedLogKeys = map[string]struct{}{
 	"access_code":        {},
@@ -48,7 +52,13 @@ type responseWriter struct {
 // We write to both our buffer (for logging) and the real writer
 // (so the client actually receives the response).
 func (rw *responseWriter) Write(b []byte) (int, error) {
-	rw.body.Write(b)
+	remaining := maxCapturedResponseBytes - rw.body.Len()
+	if remaining > 0 {
+		if len(b) < remaining {
+			remaining = len(b)
+		}
+		_, _ = rw.body.Write(b[:remaining])
+	}
 	return rw.ResponseWriter.Write(b)
 }
 
@@ -63,7 +73,7 @@ func (rw *responseWriter) WriteHeader(statusCode int) {
 // and the request/response bodies. In development this helps you see
 // exactly what's flowing through the API. In production you'd ship
 // these logs to a log aggregator (Loki, Datadog etc).
-func Logger() gin.HandlerFunc {
+func Logger(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 
@@ -91,6 +101,7 @@ func Logger() gin.HandlerFunc {
 		// zerolog outputs structured JSON logs. Structured logs are
 		// machine-parseable, you can query them with tools like jq,
 		// ship them to Loki, or filter them in Datadog without regex.
+		responseBodyLog := sanitizeLogBody(rw.body.Bytes())
 		log.Info().
 			Str("request_id", requestIDString(requestID)).
 			Str("method", c.Request.Method).
@@ -99,9 +110,40 @@ func Logger() gin.HandlerFunc {
 			Dur("duration", duration).
 			Str("ip", c.ClientIP()).
 			Str("request_body", requestBodyLog).
-			Str("response_body", sanitizeLogBody(rw.body.Bytes())).
+			Str("response_body", responseBodyLog).
 			Msg("request completed")
+
+		merchantID := merchantIDForLog(c)
+		if db != nil && merchantID != "" && c.Request.URL.Path != "/api/v1/control/logs" {
+			entry := &domain.RequestLog{
+				Base:         domain.Base{ID: uid.NewRequestLogID()},
+				MerchantID:   merchantID,
+				Method:       c.Request.Method,
+				Path:         c.Request.URL.Path,
+				StatusCode:   rw.statusCode,
+				RequestBody:  requestBodyLog,
+				ResponseBody: responseBodyLog,
+				IPAddress:    c.ClientIP(),
+				Duration:     duration.Milliseconds(),
+				RequestID:    requestIDString(requestID),
+				LoggedAt:     time.Now(),
+			}
+			if err := db.WithContext(c.Request.Context()).Create(entry).Error; err != nil {
+				log.Error().Err(err).Str("request_id", entry.RequestID).Msg("failed to persist request log")
+			}
+		}
 	}
+}
+
+func merchantIDForLog(c *gin.Context) string {
+	for _, key := range []string{"merchant_id", "merchant_id_from_jwt"} {
+		if value, exists := c.Get(key); exists {
+			if id, ok := value.(string); ok && id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 func captureRequestBodyForLogging(c *gin.Context) string {

@@ -282,7 +282,7 @@ Once Payfake is running and your app is pointing at it:
 
 ### Card payment (local Verve card)
 
-Use card number `5061000000000000` to trigger the PIN → OTP flow:
+Use card number `5061000000000005` to trigger the PIN → OTP flow:
 
 ```bash
 # 1. Your app calls initialize

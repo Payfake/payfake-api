@@ -26,6 +26,8 @@ var (
 	ErrTransactionExpired         = errors.New("transaction has expired")
 	ErrInvalidAmount              = errors.New("amount must be greater than zero")
 	ErrInvalidCurrency            = errors.New("unsupported currency")
+	ErrInvalidChannel             = errors.New("unsupported transaction channel")
+	ErrInvalidCallbackURL         = errors.New("invalid callback URL")
 
 	// Customer errors
 	ErrCustomerNotFound   = errors.New("customer not found")
@@ -36,7 +38,8 @@ var (
 	ErrChargeNotFound = errors.New("charge not found")
 
 	// Webhook errors
-	ErrWebhookNotFound = errors.New("webhook event not found")
+	ErrWebhookNotFound   = errors.New("webhook event not found")
+	ErrInvalidWebhookURL = errors.New("invalid webhook URL")
 
 	// Scenario errors
 	ErrInvalidScenarioConfig = errors.New("invalid scenario configuration")
@@ -46,6 +49,11 @@ var (
 	ErrInvalidForceStatus = errors.New("invalid force status")
 
 	ErrInvalidOTP            = errors.New("invalid OTP")
+	ErrInvalidPIN            = errors.New("invalid PIN")
+	ErrInvalidCard           = errors.New("invalid card details")
+	ErrInvalidBirthday       = errors.New("invalid birthday")
+	ErrInvalidMomoProvider   = errors.New("invalid mobile money provider")
+	ErrInvalidBankDetails    = errors.New("invalid bank details")
 	ErrChargeFlowInvalidStep = errors.New("invalid step in charge flow")
 	ErrChargeFlowExpired     = errors.New("charge flow has expired")
 	ErrOTPExpired            = errors.New("OTP has expired, request a new one")

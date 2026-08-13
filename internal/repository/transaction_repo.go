@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"github.com/payfake/payfake-api/internal/domain"
 	"gorm.io/gorm"
 )
@@ -78,7 +80,7 @@ func (r *TransactionRepository) FindByReferenceOnly(reference string) (*domain.T
 func (r *TransactionRepository) FindByAccessCode(accessCode string) (*domain.Transaction, error) {
 	var tx domain.Transaction
 	result := r.db.Preload("Customer").Preload("Merchant").
-		Where("access_code = ?", accessCode).
+		Where("access_code = ? AND access_code_expires_at > ?", accessCode, time.Now()).
 		First(&tx)
 	if result.Error != nil {
 		return nil, result.Error
@@ -101,7 +103,9 @@ func (r *TransactionRepository) List(merchantID string, status domain.Transactio
 		query = query.Where("status = ?", status)
 	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := query.Preload("Customer").
 		Order("created_at DESC").
@@ -124,6 +128,62 @@ func (r *TransactionRepository) UpdateStatus(id string, status domain.Transactio
 	return r.db.Model(&domain.Transaction{}).
 		Where("id = ?", id).
 		Updates(updates).Error
+}
+
+func (r *TransactionRepository) ReverseSuccessful(id string) (bool, error) {
+	result := r.db.Model(&domain.Transaction{}).
+		Where("id = ? AND status = ?", id, domain.TransactionSuccess).
+		Update("status", domain.TransactionReversed)
+	return result.RowsAffected == 1, result.Error
+}
+
+// ForceTerminalState keeps the transaction and its optional charge record in
+// sync when the dashboard bypasses the normal checkout flow. The pending-state
+// predicate prevents two operators or workers from forcing different outcomes
+// concurrently; only one terminal transition can win.
+func (r *TransactionRepository) ForceTerminalState(
+	id string,
+	status domain.TransactionStatus,
+	errorCode string,
+	paidAt *time.Time,
+) (bool, error) {
+	var forced bool
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{"status": status}
+		if paidAt != nil {
+			updates["paid_at"] = paidAt
+		}
+		result := tx.Model(&domain.Transaction{}).
+			Where("id = ? AND status = ?", id, domain.TransactionPending).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
+
+		chargeStatus := domain.TransactionFailed
+		flowStatus := domain.FlowFailed
+		if status == domain.TransactionSuccess {
+			chargeStatus = domain.TransactionSuccess
+			flowStatus = domain.FlowSuccess
+		}
+		if err := tx.Model(&domain.Charge{}).
+			Where("transaction_id = ? AND status = ?", id, domain.TransactionPending).
+			Updates(map[string]any{
+				"status":            chargeStatus,
+				"flow_status":       flowStatus,
+				"charge_error_code": errorCode,
+				"otp_code":          "",
+			}).Error; err != nil {
+			return err
+		}
+
+		forced = true
+		return nil
+	})
+	return forced, err
 }
 
 // UpdateChannel records the actual payment channel chosen for a transaction.
@@ -152,9 +212,11 @@ func (r *TransactionRepository) FindByCustomer(customerID, merchantID string, of
 	var transactions []domain.Transaction
 	var total int64
 
-	r.db.Model(&domain.Transaction{}).
+	if err := r.db.Model(&domain.Transaction{}).
 		Where("customer_id = ? AND merchant_id = ?", customerID, merchantID).
-		Count(&total)
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := r.db.Where("customer_id = ? AND merchant_id = ?", customerID, merchantID).
 		Order("created_at DESC").
@@ -197,7 +259,9 @@ func (r *TransactionRepository) ListWithSearch(
 			)
 	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := query.
 		Preload("Customer").

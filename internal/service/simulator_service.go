@@ -3,7 +3,6 @@ package service
 import (
 	"log"
 	"math/rand"
-	"time"
 
 	"github.com/payfake/payfake-api/internal/domain"
 	"github.com/payfake/payfake-api/internal/repository"
@@ -21,9 +20,10 @@ type SimulationResult struct {
 	// knows exactly why the charge failed, insufficient funds,
 	// momo timeout, invalid card etc.
 	ErrorCode string
-	// DelayMS is how long the simulator waited before resolving.
-	// We apply this delay before returning so the caller experiences
-	// the simulated latency naturally.
+	// DelayMS is the latency to apply when the sampled outcome reaches a
+	// terminal state. The charge stores this value because interactive flows
+	// can cross several requests; delaying here would charge the latency more
+	// than once and would not cover asynchronous MoMo completion.
 	DelayMS int
 }
 
@@ -40,9 +40,9 @@ func NewSimulatorService(scenarioRepo *repository.ScenarioRepository) *Simulator
 // SimulationResult that determines what happens to the transaction.
 //
 // Resolution priority (highest to lowest):
-//  1. ForceStatus —? if set, always return this status. No randomness.
+//  1. ForceStatus — if set, always return this status. No randomness.
 //     This is what the /control/transactions/:ref/force endpoint sets.
-//  2. Failure rate —> random roll against the configured failure rate.
+//  2. Failure rate — random roll against the configured failure rate.
 //     If the roll fails, pick a channel-appropriate error code.
 //  3. Default —> succeed. If nothing overrides, the charge succeeds.
 func (s *SimulatorService) ResolveOutcome(merchantID string, channel domain.TransactionChannel) SimulationResult {
@@ -52,20 +52,14 @@ func (s *SimulatorService) ResolveOutcome(merchantID string, channel domain.Tran
 	// This means Payfake works out of the box without any configuration.
 	scenario, err := s.scenarioRepo.FindByMerchantID(merchantID)
 	if err != nil || scenario == nil {
-		// This is the bug if it logs, scenario not found for this merchant
+		// A missing scenario is expected for a newly created merchant. Falling
+		// back keeps the payment path available even if scenario persistence is
+		// temporarily unavailable; the log preserves the diagnostic signal.
 		log.Printf("[simulator] no scenario for merchant %s, using defaults", merchantID)
 		scenario = s.defaultScenario()
 	} else {
 		log.Printf("[simulator] merchant=%s force_status=%q failure_rate=%v",
 			merchantID, scenario.ForceStatus, scenario.FailureRate)
-	}
-
-	// Apply the configured delay first, before we resolve the outcome.
-	// This simulates real-world network and processing latency.
-	// Developers need to handle slow responses gracefully, timeouts,
-	// loading states, webhook-based confirmation flows etc.
-	if scenario.DelayMS > 0 {
-		time.Sleep(time.Duration(scenario.DelayMS) * time.Millisecond)
 	}
 
 	// Priority 1: Force status overrides everything.

@@ -5,6 +5,7 @@ import (
 
 	"github.com/payfake/payfake-api/internal/domain"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type WebhookRepository struct {
@@ -20,8 +21,12 @@ func NewWebhookRepository(db *gorm.DB) *WebhookRepository {
 // we record the intent to deliver before attempting delivery.
 // This way if the delivery goroutine crashes we still have a record
 // of the event and can retry it from the control panel.
-func (r *WebhookRepository) CreateEvent(event *domain.WebhookEvent) error {
-	return r.db.Create(event).Error
+func (r *WebhookRepository) CreateEvent(event *domain.WebhookEvent) (bool, error) {
+	result := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "delivery_key"}},
+		DoNothing: true,
+	}).Create(event)
+	return result.RowsAffected == 1, result.Error
 }
 
 // FindEventByID retrieves a webhook event by ID scoped to a merchant.
@@ -42,9 +47,11 @@ func (r *WebhookRepository) ListEvents(merchantID string, offset, limit int) ([]
 	var events []domain.WebhookEvent
 	var total int64
 
-	r.db.Model(&domain.WebhookEvent{}).
+	if err := r.db.Model(&domain.WebhookEvent{}).
 		Where("merchant_id = ?", merchantID).
-		Count(&total)
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := r.db.Where("merchant_id = ?", merchantID).
 		Preload("AttemptLogs").

@@ -32,7 +32,8 @@ remain anonymous.
 
 **Secret keys never touch the frontend.**
 The public checkout endpoints (`/api/v1/public/*`) authenticate via `access_code`
-— a short-lived single-use token tied to one transaction. The merchant's `sk_test_`
+— a transaction-scoped token that expires after one hour. Terminal transaction
+state prevents it from mutating a completed checkout. The merchant's `sk_test_`
 key is never sent to or required by the browser.
 
 **Webhook signatures.**
@@ -45,8 +46,20 @@ Merchant passwords are hashed with bcrypt at cost factor 12. Plain text password
 are never stored or logged.
 
 **Constant-time comparisons.**
-Password verification uses `bcrypt.CompareHashAndPassword` and webhook signature
-verification uses `hmac.Equal`, both are constant-time to prevent timing attacks.
+Password verification uses `bcrypt.CompareHashAndPassword`, webhook signature
+verification uses `hmac.Equal`, and OTP verification uses a constant-time byte
+comparison. These prevent secret-prefix timing leaks.
+
+**Refresh token replay protection.**
+Refresh JWTs carry a unique token ID backed by a one-time database session.
+Rotation consumes the old session atomically, and logout or password changes
+revoke sessions so previously issued refresh tokens cannot extend the session.
+
+**Webhook destination isolation.**
+Production rejects loopback, private, link-local, multicast, and non-HTTP(S)
+webhook destinations. The address is checked both when configured and every
+time it is resolved for delivery to prevent DNS-rebinding SSRF. Development
+mode permits private destinations so local webhook testing still works.
 
 **Same error messages for auth failures.**
 Login returns the same error message whether the email doesn't exist or the

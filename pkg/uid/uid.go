@@ -76,7 +76,7 @@ func NewScenarioID() string        { return generate(PrefixScenario) }
 func NewRequestLogID() string      { return generate(PrefixRequestLog) }
 
 // NewAccessCode generates the access code returned on transaction initialize.
-// This is what the frontend uses to open the payment popup, it is short-lived
-// and single-use. Same format as other IDs but semantically different —
-// it's a token, not a persistent entity identifier.
+// This is what the frontend uses to open the payment popup. Its database record
+// applies the one-hour lifetime and transaction scope; this helper is only
+// responsible for generating an unpredictable token value.
 func NewAccessCode() string { return generate(PrefixAccessCode) }

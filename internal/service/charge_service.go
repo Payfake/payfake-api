@@ -1,8 +1,12 @@
 package service
 
 import (
+	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/payfake/payfake-api/internal/domain"
@@ -145,6 +149,9 @@ type ChargeFlowResponse struct {
 // We detect card type from the number, Visa/Mastercard starting
 // with certain ranges are treated as international.
 func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, error) {
+	if !validCard(input.CardNumber, input.CardExpiry, input.CardCVV, time.Now()) {
+		return nil, ErrInvalidCard
+	}
 	tx, err := s.findOrCreateTransaction(
 		input.AccessCode, input.Reference,
 		input.MerchantID, input.Email, input.Amount,
@@ -153,46 +160,61 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		return nil, err
 	}
 
-	// Check scenario immediately on charge initiation.
+	cardType := detectCardType(input.CardNumber)
+	initialFlow := domain.FlowSendPIN
+	if cardType == domain.CardTypeInternational {
+		initialFlow = domain.FlowOpenURL
+	}
+
+	// Resolve the scenario exactly once for the whole charge. Sampling a
+	// failure rate again at PIN, OTP, and 3DS steps compounds the configured
+	// probability and makes a supposedly deterministic test difficult to
+	// reproduce. A terminal failure or abandonment is applied immediately;
+	// a successful sample allows the normal customer-interaction flow to run.
 	// If force_status is set to failed we fail before creating the charge
 	// and before starting any flow. This is the correct behavior,
 	// developers testing failure scenarios shouldn't have to complete
 	// the entire PIN → OTP flow just to get a failure.
 	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
-	if result.Status == domain.TransactionFailed {
+	if result.Status == domain.TransactionFailed || result.Status == domain.TransactionAbandoned {
 		// Create the charge in failed state so it's visible in logs
 		charge := &domain.Charge{
-			Base:            domain.Base{ID: uid.NewChargeID()},
-			MerchantID:      input.MerchantID,
-			TransactionID:   tx.ID,
-			Channel:         domain.ChannelCard,
-			Status:          domain.TransactionFailed,
-			FlowStatus:      domain.FlowFailed,
-			CardLast4:       safeCardLast4(input.CardNumber),
-			CardBrand:       detectCardBrand(input.CardNumber),
-			CardType:        detectCardType(input.CardNumber),
-			ChargeErrorCode: result.ErrorCode,
+			Base:              domain.Base{ID: uid.NewChargeID()},
+			MerchantID:        input.MerchantID,
+			TransactionID:     tx.ID,
+			Channel:           domain.ChannelCard,
+			Status:            domain.TransactionPending,
+			FlowStatus:        initialFlow,
+			CardLast4:         safeCardLast4(input.CardNumber),
+			CardExpiry:        input.CardExpiry,
+			CardBrand:         detectCardBrand(input.CardNumber),
+			CardType:          cardType,
+			ChargeErrorCode:   result.ErrorCode,
+			SimulationDelayMS: result.DelayMS,
 		}
-		if err := s.chargeRepo.Create(charge); err != nil {
-			return nil, fmt.Errorf("failed to create charge: %w", err)
+		if err := s.createChargeOnce(charge, nil); err != nil {
+			return nil, err
 		}
 		if err := s.setTransactionChannel(tx, domain.ChannelCard); err != nil {
 			return nil, err
 		}
+		if result.Status == domain.TransactionAbandoned {
+			return s.abandonCharge(charge)
+		}
 		return s.failCharge(charge, result.ErrorCode)
 	}
 
-	cardType := detectCardType(input.CardNumber)
-
 	charge := &domain.Charge{
-		Base:          domain.Base{ID: uid.NewChargeID()},
-		MerchantID:    input.MerchantID,
-		TransactionID: tx.ID,
-		Channel:       domain.ChannelCard,
-		Status:        domain.TransactionPending,
-		CardLast4:     safeCardLast4(input.CardNumber),
-		CardBrand:     detectCardBrand(input.CardNumber),
-		CardType:      cardType,
+		Base:              domain.Base{ID: uid.NewChargeID()},
+		MerchantID:        input.MerchantID,
+		TransactionID:     tx.ID,
+		Channel:           domain.ChannelCard,
+		Status:            domain.TransactionPending,
+		CardLast4:         safeCardLast4(input.CardNumber),
+		CardExpiry:        input.CardExpiry,
+		CardBrand:         detectCardBrand(input.CardNumber),
+		CardType:          cardType,
+		SimulationDelayMS: result.DelayMS,
 	}
 
 	if cardType == domain.CardTypeInternational {
@@ -202,8 +224,8 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 		charge.FlowStatus = domain.FlowSendPIN
 	}
 
-	if err := s.chargeRepo.Create(charge); err != nil {
-		return nil, fmt.Errorf("failed to create charge: %w", err)
+	if err := s.createChargeOnce(charge, nil); err != nil {
+		return nil, err
 	}
 	if err := s.setTransactionChannel(tx, domain.ChannelCard); err != nil {
 		return nil, err
@@ -231,6 +253,9 @@ func (s *ChargeService) ChargeCard(input ChargeCardInput) (*ChargeFlowResponse, 
 // After OTP verification the flow moves to pay_offline while waiting
 // for the customer to approve the USSD prompt.
 func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowResponse, error) {
+	if input.Phone == "" || !validMomoProvider(input.Provider) {
+		return nil, ErrInvalidMomoProvider
+	}
 	tx, err := s.findOrCreateTransaction(
 		input.AccessCode, input.Reference,
 		input.MerchantID, input.Email, input.Amount,
@@ -244,23 +269,27 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 	// the number is invalid, etc. No point sending an OTP if we know
 	// the outcome is forced to failed.
 	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelMobileMoney)
-	if result.Status == domain.TransactionFailed {
+	if result.Status == domain.TransactionFailed || result.Status == domain.TransactionAbandoned {
 		charge := &domain.Charge{
-			Base:            domain.Base{ID: uid.NewChargeID()},
-			MerchantID:      input.MerchantID,
-			TransactionID:   tx.ID,
-			Channel:         domain.ChannelMobileMoney,
-			Status:          domain.TransactionFailed,
-			FlowStatus:      domain.FlowFailed,
-			MomoPhone:       input.Phone,
-			MomoProvider:    input.Provider,
-			ChargeErrorCode: result.ErrorCode,
+			Base:              domain.Base{ID: uid.NewChargeID()},
+			MerchantID:        input.MerchantID,
+			TransactionID:     tx.ID,
+			Channel:           domain.ChannelMobileMoney,
+			Status:            domain.TransactionPending,
+			FlowStatus:        domain.FlowSendOTP,
+			MomoPhone:         input.Phone,
+			MomoProvider:      input.Provider,
+			ChargeErrorCode:   result.ErrorCode,
+			SimulationDelayMS: result.DelayMS,
 		}
-		if err := s.chargeRepo.Create(charge); err != nil {
-			return nil, fmt.Errorf("failed to create charge: %w", err)
+		if err := s.createChargeOnce(charge, nil); err != nil {
+			return nil, err
 		}
 		if err := s.setTransactionChannel(tx, domain.ChannelMobileMoney); err != nil {
 			return nil, err
+		}
+		if result.Status == domain.TransactionAbandoned {
+			return s.abandonCharge(charge)
 		}
 		return s.failCharge(charge, result.ErrorCode)
 	}
@@ -271,25 +300,25 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 	}
 
 	charge := &domain.Charge{
-		Base:          domain.Base{ID: uid.NewChargeID()},
-		MerchantID:    input.MerchantID,
-		TransactionID: tx.ID,
-		Channel:       domain.ChannelMobileMoney,
-		Status:        domain.TransactionPending,
-		FlowStatus:    domain.FlowSendOTP,
-		MomoPhone:     input.Phone,
-		MomoProvider:  input.Provider,
-		OTPCode:       otpCode,
+		Base:              domain.Base{ID: uid.NewChargeID()},
+		MerchantID:        input.MerchantID,
+		TransactionID:     tx.ID,
+		Channel:           domain.ChannelMobileMoney,
+		Status:            domain.TransactionPending,
+		FlowStatus:        domain.FlowSendOTP,
+		MomoPhone:         input.Phone,
+		MomoProvider:      input.Provider,
+		OTPCode:           otpCode,
+		SimulationDelayMS: result.DelayMS,
 	}
 
-	if err := s.chargeRepo.Create(charge); err != nil {
-		return nil, fmt.Errorf("failed to create charge: %w", err)
+	otpLog := newOTPLog(input.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
+	if err := s.createChargeOnce(charge, otpLog); err != nil {
+		return nil, err
 	}
 	if err := s.setTransactionChannel(tx, domain.ChannelMobileMoney); err != nil {
 		return nil, err
 	}
-
-	s.otpRepo.Create(input.MerchantID, tx.Reference, string(domain.ChannelMobileMoney), "send_otp", otpCode)
 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendOTP,
@@ -305,6 +334,9 @@ func (s *ChargeService) ChargeMobileMoney(input ChargeMomoInput) (*ChargeFlowRes
 // Returns send_birthday, the customer must enter their date of birth
 // as the first verification step, same as real Paystack bank charges.
 func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, error) {
+	if input.BankCode == "" || input.AccountNumber == "" {
+		return nil, ErrInvalidBankDetails
+	}
 	tx, err := s.findOrCreateTransaction(
 		input.AccessCode, input.Reference,
 		input.MerchantID, input.Email, input.Amount,
@@ -315,23 +347,27 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 
 	// Check scenario on initiation.
 	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelBankTransfer)
-	if result.Status == domain.TransactionFailed {
+	if result.Status == domain.TransactionFailed || result.Status == domain.TransactionAbandoned {
 		charge := &domain.Charge{
 			Base:              domain.Base{ID: uid.NewChargeID()},
 			MerchantID:        input.MerchantID,
 			TransactionID:     tx.ID,
 			Channel:           domain.ChannelBankTransfer,
-			Status:            domain.TransactionFailed,
-			FlowStatus:        domain.FlowFailed,
+			Status:            domain.TransactionPending,
+			FlowStatus:        domain.FlowSendBirthday,
 			BankCode:          input.BankCode,
 			BankAccountNumber: input.AccountNumber,
 			ChargeErrorCode:   result.ErrorCode,
+			SimulationDelayMS: result.DelayMS,
 		}
-		if err := s.chargeRepo.Create(charge); err != nil {
-			return nil, fmt.Errorf("failed to create charge: %w", err)
+		if err := s.createChargeOnce(charge, nil); err != nil {
+			return nil, err
 		}
 		if err := s.setTransactionChannel(tx, domain.ChannelBankTransfer); err != nil {
 			return nil, err
+		}
+		if result.Status == domain.TransactionAbandoned {
+			return s.abandonCharge(charge)
 		}
 		return s.failCharge(charge, result.ErrorCode)
 	}
@@ -345,10 +381,11 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 		FlowStatus:        domain.FlowSendBirthday,
 		BankCode:          input.BankCode,
 		BankAccountNumber: input.AccountNumber,
+		SimulationDelayMS: result.DelayMS,
 	}
 
-	if err := s.chargeRepo.Create(charge); err != nil {
-		return nil, fmt.Errorf("failed to create charge: %w", err)
+	if err := s.createChargeOnce(charge, nil); err != nil {
+		return nil, err
 	}
 	if err := s.setTransactionChannel(tx, domain.ChannelBankTransfer); err != nil {
 		return nil, err
@@ -369,6 +406,9 @@ func (s *ChargeService) ChargeBank(input ChargeBankInput) (*ChargeFlowResponse, 
 // Any 4-digit PIN is accepted unless the simulator rejects it —
 // we're simulating behavior, not real PIN validation.
 func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, error) {
+	if len(input.PIN) != 4 || !allDigits(input.PIN) {
+		return nil, ErrInvalidPIN
+	}
 	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
 	if err != nil {
 		return nil, ErrChargeNotFound
@@ -379,14 +419,9 @@ func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, er
 	if charge.FlowStatus != domain.FlowSendPIN {
 		return nil, ErrChargeFlowInvalidStep
 	}
-
-	// Check scenario, the simulator may force a PIN failure here.
-	// CHARGE_INVALID_PIN specifically means the PIN step fails.
-	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
-	// ChargeInvalidPIN is a response code string, not a domain constant.
-	// We compare against the string directly.
-	if result.Status == domain.TransactionFailed && result.ErrorCode == "CHARGE_INVALID_PIN" {
-		return s.failCharge(charge, result.ErrorCode)
+	tx, err := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load transaction for PIN step: %w", err)
 	}
 
 	// PIN accepted, generate OTP and advance to OTP step.
@@ -394,15 +429,19 @@ func (s *ChargeService) SubmitPIN(input SubmitPINInput) (*ChargeFlowResponse, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
-	s.otpRepo.Create(input.MerchantID, input.Reference, string(domain.ChannelCard), "submit_pin", otpCode)
-
-	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
+	otpLog := newOTPLog(input.MerchantID, input.Reference, string(domain.ChannelCard), "submit_pin", otpCode)
+	advanced, err := s.chargeRepo.AdvanceFlow(
+		charge.ID, domain.FlowSendPIN, domain.FlowSendOTP,
+		"", otpCode, otpLog, "", input.MerchantID,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("failed to update flow status: %w", err)
+	}
+	if !advanced {
+		return nil, ErrChargeFlowInvalidStep
 	}
 
 	charge.FlowStatus = domain.FlowSendOTP
-
-	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendOTP,
@@ -427,10 +466,9 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 		return nil, ErrChargeFlowInvalidStep
 	}
 
-	// Verify OTP, constant time comparison to prevent timing attacks.
-	// We compare the submitted OTP against what we generated and stored.
-	// In simulation any OTP works unless the scenario forces failure —
-	// but we still validate the format (6 digits).
+	// Reject malformed values before loading OTP state. The actual secret is
+	// compared below in constant time so a caller cannot learn matching prefix
+	// length from response timing.
 	if !isValidOTPFormat(input.OTP) {
 		return nil, ErrInvalidOTP
 	}
@@ -452,27 +490,32 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 	if time.Now().After(latestOTP.ExpiresAt) {
 		return nil, ErrOTPExpired
 	}
-
-	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, charge.Channel)
+	if !otpMatches(latestOTP.OTPCode, input.OTP) {
+		return nil, ErrInvalidOTP
+	}
 
 	if charge.Channel == domain.ChannelCard {
-		if result.Status == domain.TransactionFailed {
-			return s.failCharge(charge, result.ErrorCode)
-		}
-		s.otpRepo.MarkUsed(input.Reference)
-		return s.succeedCharge(charge, input.Reference, input.MerchantID)
+		return s.succeedCharge(charge, input.Reference, input.MerchantID, latestOTP.ID)
 	}
 
 	// For MoMo, advance to pay_offline after OTP.
 	// The customer now needs to approve the USSD prompt on their phone.
 	if charge.Channel == domain.ChannelMobileMoney {
-		if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowPayOffline, ""); err != nil {
+		tx, err := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load transaction for MoMo step: %w", err)
+		}
+		advanced, err := s.chargeRepo.AdvanceFlow(
+			charge.ID, domain.FlowSendOTP, domain.FlowPayOffline,
+			charge.OTPCode, "", nil, latestOTP.ID, input.MerchantID,
+		)
+		if err != nil {
 			return nil, fmt.Errorf("failed to update flow status: %w", err)
 		}
+		if !advanced {
+			return nil, ErrChargeFlowInvalidStep
+		}
 		charge.FlowStatus = domain.FlowPayOffline
-		s.otpRepo.MarkUsed(input.Reference)
-
-		tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
 
 		// Now resolve MoMo asynchronously, same as before but triggered
 		// after OTP is verified, not immediately on charge initiation.
@@ -489,11 +532,7 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 
 	// Bank channel OTP
 	if charge.Channel == domain.ChannelBankTransfer {
-		if result.Status == domain.TransactionFailed {
-			return s.failCharge(charge, result.ErrorCode)
-		}
-		s.otpRepo.MarkUsed(input.Reference)
-		return s.succeedCharge(charge, input.Reference, input.MerchantID)
+		return s.succeedCharge(charge, input.Reference, input.MerchantID, latestOTP.ID)
 	}
 
 	return nil, ErrChargeFlowInvalidStep
@@ -503,6 +542,10 @@ func (s *ChargeService) SubmitOTP(input SubmitOTPInput) (*ChargeFlowResponse, er
 // Any valid date format is accepted, we're simulating, not validating
 // against a real bank's records. After birthday, OTP is sent.
 func (s *ChargeService) SubmitBirthday(input SubmitBirthdayInput) (*ChargeFlowResponse, error) {
+	birthday, err := time.Parse("2006-01-02", input.Birthday)
+	if err != nil || birthday.After(time.Now()) {
+		return nil, ErrInvalidBirthday
+	}
 	charge, err := s.chargeRepo.FindByTransactionReference(input.Reference, input.MerchantID)
 	if err != nil {
 		return nil, ErrChargeNotFound
@@ -511,11 +554,9 @@ func (s *ChargeService) SubmitBirthday(input SubmitBirthdayInput) (*ChargeFlowRe
 	if charge.FlowStatus != domain.FlowSendBirthday {
 		return nil, ErrChargeFlowInvalidStep
 	}
-
-	// Check scenario for birthday failure.
-	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelBankTransfer)
-	if result.Status == domain.TransactionFailed {
-		return s.failCharge(charge, result.ErrorCode)
+	tx, err := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load transaction for birthday step: %w", err)
 	}
 
 	// Birthday accepted, generate OTP and advance.
@@ -523,15 +564,19 @@ func (s *ChargeService) SubmitBirthday(input SubmitBirthdayInput) (*ChargeFlowRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
-	s.otpRepo.Create(input.MerchantID, input.Reference, string(domain.ChannelBankTransfer), "submit_birthday", otpCode)
-
-	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, otpCode); err != nil {
+	otpLog := newOTPLog(input.MerchantID, input.Reference, string(domain.ChannelBankTransfer), "submit_birthday", otpCode)
+	advanced, err := s.chargeRepo.AdvanceFlow(
+		charge.ID, domain.FlowSendBirthday, domain.FlowSendOTP,
+		"", otpCode, otpLog, "", input.MerchantID,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("failed to update flow status: %w", err)
+	}
+	if !advanced {
+		return nil, ErrChargeFlowInvalidStep
 	}
 
 	charge.FlowStatus = domain.FlowSendOTP
-
-	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendOTP,
@@ -555,12 +600,7 @@ func (s *ChargeService) SubmitAddress(input SubmitAddressInput) (*ChargeFlowResp
 		return nil, ErrChargeFlowInvalidStep
 	}
 
-	result := s.simulatorSvc.ResolveOutcome(input.MerchantID, domain.ChannelCard)
-	if result.Status == domain.TransactionFailed {
-		return s.failCharge(charge, result.ErrorCode)
-	}
-
-	return s.succeedCharge(charge, input.Reference, input.MerchantID)
+	return s.succeedCharge(charge, input.Reference, input.MerchantID, "")
 }
 
 // Simulate3DS handles the simulated 3DS verification completion.
@@ -577,12 +617,7 @@ func (s *ChargeService) Simulate3DS(reference, merchantID string) (*ChargeFlowRe
 		return nil, ErrChargeFlowInvalidStep
 	}
 
-	result := s.simulatorSvc.ResolveOutcome(merchantID, domain.ChannelCard)
-	if result.Status == domain.TransactionFailed {
-		return s.failCharge(charge, result.ErrorCode)
-	}
-
-	return s.succeedCharge(charge, reference, merchantID)
+	return s.succeedCharge(charge, reference, merchantID, "")
 }
 
 // ResendOTPInput is the input for resending an OTP.
@@ -606,18 +641,26 @@ func (s *ChargeService) ResendOTP(input ResendOTPInput) (*ChargeFlowResponse, er
 	if charge.FlowStatus != domain.FlowSendOTP {
 		return nil, ErrChargeFlowInvalidStep
 	}
+	tx, err := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load transaction for OTP resend: %w", err)
+	}
 
 	newOTP, err := otp.GenerateOTP()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
-	s.otpRepo.Create(input.MerchantID, input.Reference, string(charge.Channel), "resend_otp", newOTP)
-
-	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSendOTP, newOTP); err != nil {
+	otpLog := newOTPLog(input.MerchantID, input.Reference, string(charge.Channel), "resend_otp", newOTP)
+	advanced, err := s.chargeRepo.AdvanceFlow(
+		charge.ID, domain.FlowSendOTP, domain.FlowSendOTP,
+		charge.OTPCode, newOTP, otpLog, "", input.MerchantID,
+	)
+	if err != nil {
 		return nil, fmt.Errorf("failed to update OTP: %w", err)
 	}
-
-	tx, _ := s.transactionRepo.FindByReference(input.Reference, input.MerchantID)
+	if !advanced {
+		return nil, ErrChargeFlowInvalidStep
+	}
 
 	return &ChargeFlowResponse{
 		Status:      domain.FlowSendOTP,
@@ -657,27 +700,33 @@ func (s *ChargeService) GetMerchantByAccessCode(accessCode string) (*domain.Merc
 
 // succeedCharge marks a charge and its transaction as successful
 // then fires the charge.success webhook.
-func (s *ChargeService) succeedCharge(charge *domain.Charge, reference, merchantID string) (*ChargeFlowResponse, error) {
+func (s *ChargeService) succeedCharge(charge *domain.Charge, reference, merchantID, otpLogID string) (*ChargeFlowResponse, error) {
+	applySimulationDelay(charge.SimulationDelayMS)
 	now := time.Now()
 
-	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowSuccess, ""); err != nil {
-		return nil, fmt.Errorf("failed to update charge: %w", err)
+	finalized, err := s.chargeRepo.Finalize(
+		charge.ID, charge.TransactionID, charge.FlowStatus,
+		domain.TransactionSuccess, domain.TransactionSuccess, domain.FlowSuccess,
+		"", &now, otpLogID, merchantID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to finalize successful charge: %w", err)
 	}
-	if err := s.chargeRepo.UpdateStatus(charge.ID, domain.TransactionSuccess); err != nil {
-		return nil, fmt.Errorf("failed to update charge status: %w", err)
-	}
-	if err := s.transactionRepo.UpdateStatus(charge.TransactionID, domain.TransactionSuccess, &now); err != nil {
-		return nil, fmt.Errorf("failed to update transaction: %w", err)
+	if !finalized {
+		return nil, ErrChargeFlowInvalidStep
 	}
 
 	charge.FlowStatus = domain.FlowSuccess
 	charge.Status = domain.TransactionSuccess
 
-	tx, _ := s.transactionRepo.FindByReference(reference, merchantID)
-	if tx != nil {
-		tx.Status = domain.TransactionSuccess
-		tx.PaidAt = &now
-		s.webhookSvc.Dispatch(merchantID, charge.TransactionID, domain.EventChargeSuccess, tx)
+	tx, err := s.transactionRepo.FindByReference(reference, merchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload successful transaction: %w", err)
+	}
+	tx.Status = domain.TransactionSuccess
+	tx.PaidAt = &now
+	if err := s.webhookSvc.Dispatch(merchantID, charge.TransactionID, domain.EventChargeSuccess, tx); err != nil {
+		log.Printf("[payfake] successful charge %s committed but webhook enqueue failed: %v", reference, err)
 	}
 
 	return &ChargeFlowResponse{
@@ -692,26 +741,30 @@ func (s *ChargeService) succeedCharge(charge *domain.Charge, reference, merchant
 // failCharge marks a charge and its transaction as failed
 // then fires the charge.failed webhook.
 func (s *ChargeService) failCharge(charge *domain.Charge, errorCode string) (*ChargeFlowResponse, error) {
-	if err := s.chargeRepo.UpdateFlowStatus(charge.ID, domain.FlowFailed, ""); err != nil {
-		return nil, fmt.Errorf("failed to update charge: %w", err)
+	applySimulationDelay(charge.SimulationDelayMS)
+	finalized, err := s.chargeRepo.Finalize(
+		charge.ID, charge.TransactionID, charge.FlowStatus,
+		domain.TransactionFailed, domain.TransactionFailed, domain.FlowFailed,
+		errorCode, nil, "", charge.MerchantID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to finalize failed charge: %w", err)
 	}
-	if err := s.chargeRepo.UpdateStatus(charge.ID, domain.TransactionFailed); err != nil {
-		return nil, fmt.Errorf("failed to update charge status: %w", err)
-	}
-	if err := s.chargeRepo.UpdateChargeError(charge.ID, errorCode); err != nil {
-		return nil, fmt.Errorf("failed to update charge error: %w", err)
-	}
-	if err := s.transactionRepo.UpdateStatus(charge.TransactionID, domain.TransactionFailed, nil); err != nil {
-		return nil, fmt.Errorf("failed to update transaction: %w", err)
+	if !finalized {
+		return nil, ErrChargeFlowInvalidStep
 	}
 
 	charge.FlowStatus = domain.FlowFailed
 	charge.Status = domain.TransactionFailed
 	charge.ChargeErrorCode = errorCode
 
-	tx, _ := s.transactionRepo.FindByID(charge.TransactionID, charge.MerchantID)
-	if tx != nil {
-		s.webhookSvc.Dispatch(charge.MerchantID, charge.TransactionID, domain.EventChargeFailed, tx)
+	tx, err := s.transactionRepo.FindByID(charge.TransactionID, charge.MerchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload failed transaction: %w", err)
+	}
+	tx.Status = domain.TransactionFailed
+	if err := s.webhookSvc.Dispatch(charge.MerchantID, charge.TransactionID, domain.EventChargeFailed, tx); err != nil {
+		log.Printf("[payfake] failed charge %s committed but webhook enqueue failed: %v", tx.Reference, err)
 	}
 
 	return &ChargeFlowResponse{
@@ -723,15 +776,45 @@ func (s *ChargeService) failCharge(charge *domain.Charge, errorCode string) (*Ch
 	}, nil
 }
 
+// abandonCharge applies a forced-abandoned scenario without pretending the
+// charge itself succeeded. Abandonment is a terminal transaction state but not
+// a Paystack charge event, so no success/failed webhook is emitted here.
+func (s *ChargeService) abandonCharge(charge *domain.Charge) (*ChargeFlowResponse, error) {
+	applySimulationDelay(charge.SimulationDelayMS)
+	finalized, err := s.chargeRepo.Finalize(
+		charge.ID, charge.TransactionID, charge.FlowStatus,
+		domain.TransactionAbandoned, domain.TransactionFailed, domain.FlowFailed,
+		"CHARGE_ABANDONED", nil, "", charge.MerchantID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to abandon charge: %w", err)
+	}
+	if !finalized {
+		return nil, ErrChargeFlowInvalidStep
+	}
+
+	tx, err := s.transactionRepo.FindByID(charge.TransactionID, charge.MerchantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reload abandoned transaction: %w", err)
+	}
+	charge.Status = domain.TransactionFailed
+	charge.FlowStatus = domain.FlowFailed
+	charge.ChargeErrorCode = "CHARGE_ABANDONED"
+	tx.Status = domain.TransactionAbandoned
+	return &ChargeFlowResponse{
+		Status:      domain.FlowFailed,
+		Reference:   tx.Reference,
+		DisplayText: "Payment abandoned",
+		Charge:      charge,
+		Transaction: tx,
+	}, nil
+}
+
 // resolveMomoAsync resolves a MoMo charge asynchronously after OTP verification.
 func (s *ChargeService) resolveMomoAsync(charge *domain.Charge, reference, merchantID string) {
-	result := s.simulatorSvc.ResolveOutcome(charge.MerchantID, domain.ChannelMobileMoney)
-
-	if result.Status == domain.TransactionFailed {
-		s.failCharge(charge, result.ErrorCode)
-		return
+	if _, err := s.succeedCharge(charge, reference, merchantID, ""); err != nil && !errors.Is(err, ErrChargeFlowInvalidStep) {
+		log.Printf("[payfake] failed to resolve MoMo charge %s: %v", reference, err)
 	}
-	s.succeedCharge(charge, reference, merchantID)
 }
 
 // findOrCreateTransaction finds an existing pending transaction via access_code
@@ -765,14 +848,15 @@ func (s *ChargeService) findOrCreateTransaction(
 	}
 
 	tx = &domain.Transaction{
-		Base:       domain.Base{ID: uid.NewTransactionID()},
-		MerchantID: merchantID,
-		CustomerID: customer.ID,
-		Amount:     amount,
-		Currency:   domain.CurrencyGHS,
-		Status:     domain.TransactionPending,
-		Reference:  reference,
-		AccessCode: uid.NewAccessCode(),
+		Base:                domain.Base{ID: uid.NewTransactionID()},
+		MerchantID:          merchantID,
+		CustomerID:          customer.ID,
+		Amount:              amount,
+		Currency:            domain.CurrencyGHS,
+		Status:              domain.TransactionPending,
+		Reference:           reference,
+		AccessCode:          uid.NewAccessCode(),
+		AccessCodeExpiresAt: time.Now().Add(time.Hour),
 	}
 	if tx.Reference == "" {
 		tx.Reference = uid.NewReference()
@@ -867,6 +951,29 @@ func (s *ChargeService) setTransactionChannel(tx *domain.Transaction, channel do
 	return nil
 }
 
+func (s *ChargeService) createChargeOnce(charge *domain.Charge, otpLog *domain.OTPLog) error {
+	created, err := s.chargeRepo.CreateOnce(charge, otpLog)
+	if err != nil {
+		return fmt.Errorf("failed to create charge: %w", err)
+	}
+	if !created {
+		return ErrChargeFlowInvalidStep
+	}
+	return nil
+}
+
+func newOTPLog(merchantID, reference, channel, step, otpCode string) *domain.OTPLog {
+	return &domain.OTPLog{
+		Base:       domain.Base{ID: uid.NewRequestLogID()},
+		MerchantID: merchantID,
+		Reference:  reference,
+		Channel:    channel,
+		OTPCode:    otpCode,
+		Step:       step,
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+	}
+}
+
 func safeCardLast4(cardNumber string) string {
 	if len(cardNumber) < 4 {
 		return ""
@@ -936,4 +1043,75 @@ func isValidOTPFormat(otpCode string) bool {
 		}
 	}
 	return true
+}
+
+func otpMatches(expected, submitted string) bool {
+	if !isValidOTPFormat(expected) || !isValidOTPFormat(submitted) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(submitted)) == 1
+}
+
+func validMomoProvider(provider domain.MomoProvider) bool {
+	switch provider {
+	case domain.ProviderMTN, domain.ProviderVodafone, domain.ProviderAirtelTigo:
+		return true
+	default:
+		return false
+	}
+}
+
+func validCard(number, expiry, cvv string, now time.Time) bool {
+	if len(number) < 13 || len(number) > 19 || !allDigits(number) || !passesLuhn(number) {
+		return false
+	}
+	if (len(cvv) != 3 && len(cvv) != 4) || !allDigits(cvv) {
+		return false
+	}
+	parts := strings.Split(expiry, "/")
+	if len(parts) != 2 || len(parts[0]) != 2 || len(parts[1]) != 2 {
+		return false
+	}
+	month, monthErr := strconv.Atoi(parts[0])
+	year, yearErr := strconv.Atoi(parts[1])
+	if monthErr != nil || yearErr != nil || month < 1 || month > 12 {
+		return false
+	}
+	fullYear := 2000 + year
+	return fullYear > now.Year() || (fullYear == now.Year() && month >= int(now.Month()))
+}
+
+func passesLuhn(number string) bool {
+	sum := 0
+	double := len(number)%2 == 0
+	for _, char := range number {
+		digit := int(char - '0')
+		if double {
+			digit *= 2
+			if digit > 9 {
+				digit -= 9
+			}
+		}
+		sum += digit
+		double = !double
+	}
+	return sum%10 == 0
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func applySimulationDelay(delayMS int) {
+	if delayMS > 0 {
+		time.Sleep(time.Duration(delayMS) * time.Millisecond)
+	}
 }

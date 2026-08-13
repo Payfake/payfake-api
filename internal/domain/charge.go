@@ -80,6 +80,11 @@ type Charge struct {
 
 	// Error codes for failed charges
 	ChargeErrorCode string `gorm:"type:varchar(100)" json:"error_code,omitempty"`
+
+	// SimulationDelayMS is sampled with the scenario once at initiation and
+	// applied when the charge reaches its terminal step. Persisting it keeps a
+	// multi-step flow deterministic even if dashboard settings change midway.
+	SimulationDelayMS int `gorm:"default:0" json:"-"`
 }
 
 // Error codes as constants, used by the simulator and force endpoint.

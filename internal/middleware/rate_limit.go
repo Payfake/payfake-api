@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,9 +14,11 @@ import (
 // count is how many requests this client has made in the current window.
 // windowStart is when the current window began.
 type bucket struct {
-	count       int
-	windowStart time.Time
-	mu          sync.Mutex
+	count        int
+	windowStart  time.Time
+	lastSeen     time.Time
+	expiresAfter time.Duration
+	mu           sync.Mutex
 }
 
 // limiter holds all active buckets, one per client IP.
@@ -24,6 +27,7 @@ type bucket struct {
 // exactly our pattern: first request creates the bucket, subsequent
 // requests read and increment it.
 var limiter sync.Map
+var limiterRequests atomic.Uint64
 
 // RateLimit returns a middleware that enforces a request rate limit.
 // maxRequests is the number of requests allowed per window.
@@ -48,14 +52,15 @@ func RateLimit(maxRequests int, windowDuration time.Duration) gin.HandlerFunc {
 		// LoadOrStore is atomic, if two goroutines hit this simultaneously
 		// for the same IP, only one bucket is created.
 		raw, _ := limiter.LoadOrStore(clientIP, &bucket{
-			windowStart: time.Now(),
+			windowStart:  time.Now(),
+			lastSeen:     time.Now(),
+			expiresAfter: 2 * windowDuration,
 		})
 		b := raw.(*bucket)
 
 		b.mu.Lock()
-		defer b.mu.Unlock()
-
 		now := time.Now()
+		b.lastSeen = now
 
 		// Check if the current window has expired.
 		// If it has, reset the counter and start a new window.
@@ -68,12 +73,22 @@ func RateLimit(maxRequests int, windowDuration time.Duration) gin.HandlerFunc {
 
 		// Increment the request count for this window.
 		b.count++
+		exceeded := b.count > maxRequests
+		b.mu.Unlock()
+
+		// Cleanup runs after releasing the current bucket. Holding that lock
+		// while ranging the map would deadlock when cleanup reaches this same
+		// client, and holding it across c.Next would unnecessarily serialize
+		// every request from one development team or CI runner.
+		if limiterRequests.Add(1)%1024 == 0 {
+			cleanupLimiter(&limiter, now)
+		}
 
 		// If the client has exceeded their quota, reject the request.
 		// We return 429 Too Many Requests, the standard HTTP status
 		// for rate limiting. Well-behaved clients should back off when
 		// they receive this status.
-		if b.count > maxRequests {
+		if exceeded {
 			response.Error(
 				c,
 				429,
@@ -87,6 +102,23 @@ func RateLimit(maxRequests int, windowDuration time.Duration) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func cleanupLimiter(buckets *sync.Map, now time.Time) {
+	buckets.Range(func(key, value any) bool {
+		b, ok := value.(*bucket)
+		if !ok {
+			buckets.Delete(key)
+			return true
+		}
+		b.mu.Lock()
+		stale := b.expiresAfter > 0 && now.Sub(b.lastSeen) > b.expiresAfter
+		b.mu.Unlock()
+		if stale {
+			buckets.Delete(key)
+		}
+		return true
+	})
 }
 
 // webhookTestLimiter tracks per-merchant webhook test attempts.
@@ -108,12 +140,14 @@ func RateLimitWebhookTest() gin.HandlerFunc {
 		key := fmt.Sprintf("webhook_test_%v", merchantID)
 
 		raw, _ := webhookTestLimiter.LoadOrStore(key, &bucket{
-			windowStart: time.Now(),
+			windowStart:  time.Now(),
+			lastSeen:     time.Now(),
+			expiresAfter: 2 * time.Minute,
 		})
 		b := raw.(*bucket)
 
 		b.mu.Lock()
-		defer b.mu.Unlock()
+		b.lastSeen = time.Now()
 
 		if time.Since(b.windowStart) >= time.Minute {
 			b.count = 0
@@ -121,10 +155,12 @@ func RateLimitWebhookTest() gin.HandlerFunc {
 		}
 
 		b.count++
+		exceeded := b.count > 5
+		b.mu.Unlock()
 
 		// 5 test webhooks per minute per merchant is generous
 		// enough for legitimate testing, low enough to prevent abuse.
-		if b.count > 5 {
+		if exceeded {
 			response.Error(
 				c,
 				429,

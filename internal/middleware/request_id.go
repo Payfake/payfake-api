@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,7 @@ func RequestID() gin.HandlerFunc {
 		// pattern in distributed systems called "trace propagation".
 		requestID := c.GetHeader("X-Request-ID")
 
-		if requestID == "" {
+		if requestID == "" || len(requestID) > 128 || strings.ContainsAny(requestID, "\r\n") {
 			// No client-provided ID, generate our own.
 			// Format: req_<timestamp_ms>_<4_random_digits>
 			// The timestamp component makes IDs roughly sortable by time.

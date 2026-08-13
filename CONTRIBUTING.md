@@ -16,7 +16,7 @@ or documentation are especially welcome.
 
 ## Development Setup
 
-**Prerequisites:** Go 1.21+, PostgreSQL 14+, Docker (optional)
+**Prerequisites:** Go 1.25.1+, PostgreSQL 14+, Docker (optional)
 
 ```bash
 git clone https://github.com/payfake/payfake-api
@@ -146,13 +146,11 @@ feat: add bank transfer retry logic
 
 ## Areas That Need Work
 
-- Unit tests for the simulator engine
 - Integration tests for the full charge flow
 - Flutterwave-compatible API surface
 - Nigeria-specific payment channels (USSD, QR)
 - Kenya-specific channels (M-Pesa)
-- Rate limiting per merchant (currently global only)
-- Webhook retry worker (background process for failed deliveries)
+- Distributed rate limiting for multi-instance deployments
 - Admin panel for managing multiple merchants
 
 ---

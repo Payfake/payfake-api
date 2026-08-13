@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/payfake/payfake-api/internal/domain"
 	"github.com/payfake/payfake-api/internal/repository"
@@ -32,6 +33,7 @@ type CreateCustomerInput struct {
 // we return ErrCustomerEmailTaken, the handler maps this to the
 // correct response code.
 func (s *CustomerService) Create(input CreateCustomerInput) (*domain.Customer, error) {
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
 	exists, err := s.customerRepo.EmailExists(input.Email, input.MerchantID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check email: %w", err)
@@ -54,8 +56,12 @@ func (s *CustomerService) Create(input CreateCustomerInput) (*domain.Customer, e
 		Metadata: input.Metadata,
 	}
 
-	if err := s.customerRepo.Create(customer); err != nil {
+	created, err := s.customerRepo.CreateOnce(customer)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create customer: %w", err)
+	}
+	if !created {
+		return nil, ErrCustomerEmailTaken
 	}
 
 	return customer, nil
@@ -67,6 +73,7 @@ func (s *CustomerService) Create(input CreateCustomerInput) (*domain.Customer, e
 // the existing customer or creates a new one transparently.
 // Developers don't need to pre-create customers before charging them.
 func (s *CustomerService) FindOrCreate(merchantID, email string) (*domain.Customer, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	customer, err := s.customerRepo.FindByEmail(email, merchantID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

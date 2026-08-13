@@ -83,6 +83,12 @@ func (h *TransactionHandler) Initialize(c *gin.Context) {
 				"Invalid currency",
 				response.TransactionInvalidCurrency,
 				field("currency", "oneof", "Supported currencies: GHS, NGN, KES, USD"))
+		case errors.Is(err, service.ErrInvalidChannel):
+			response.UnprocessableErr(c, "Invalid payment channel", response.TransactionInvalidChannel,
+				field("channels", "oneof", "Supported channels: card, mobile_money, bank_transfer"))
+		case errors.Is(err, service.ErrInvalidCallbackURL):
+			response.UnprocessableErr(c, "Invalid callback URL", response.TransactionInvalidCallbackURL,
+				field("callback_url", "url", "Callback URL must use http or https"))
 		default:
 			response.InternalErr(c, "An error occurred, please try again later")
 		}
@@ -229,6 +235,7 @@ func (h *TransactionHandler) PublicFetchByAccessCode(c *gin.Context) {
 		response.NotFoundErr(c, "Invalid payment link")
 		return
 	}
+	c.Set("merchant_id", tx.MerchantID)
 
 	merchant, err := h.txSvc.GetMerchantForTransaction(tx.MerchantID)
 	if err != nil {
@@ -300,6 +307,7 @@ func (h *TransactionHandler) PublicVerify(c *gin.Context) {
 		response.NotFoundErr(c, "Transaction not found")
 		return
 	}
+	c.Set("merchant_id", tx.MerchantID)
 
 	charge, _ := h.chargeSvc.FetchChargeByTransactionID(tx.ID)
 

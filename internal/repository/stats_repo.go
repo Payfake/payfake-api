@@ -25,6 +25,7 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 		Failed    int64
 		Pending   int64
 		Abandoned int64
+		Reversed  int64
 		Volume    int64
 	}
 	var counts txCounts
@@ -36,6 +37,7 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 			COUNT(*) FILTER (WHERE status = 'failed')                     AS failed,
 			COUNT(*) FILTER (WHERE status = 'pending')                    AS pending,
 			COUNT(*) FILTER (WHERE status = 'abandoned')                  AS abandoned,
+			COUNT(*) FILTER (WHERE status = 'reversed')                   AS reversed,
 			COALESCE(SUM(amount) FILTER (WHERE status = 'success'), 0)    AS volume
 		FROM transactions
 		WHERE merchant_id = ? AND deleted_at IS NULL
@@ -49,16 +51,19 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 	stats.FailedCount = counts.Failed
 	stats.PendingCount = counts.Pending
 	stats.AbandonedCount = counts.Abandoned
+	stats.ReversedCount = counts.Reversed
 	stats.TotalVolume = counts.Volume
 
 	if counts.Total > 0 {
 		stats.SuccessRate = float64(counts.Success) / float64(counts.Total) * 100
 	}
 
-	r.db.Raw(`
+	if err := r.db.Raw(`
 		SELECT COUNT(*) FROM customers
 		WHERE merchant_id = ? AND deleted_at IS NULL
-	`, merchantID).Scan(&stats.TotalCustomers)
+	`, merchantID).Scan(&stats.TotalCustomers).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch customer count: %w", err)
+	}
 
 	type webhookCounts struct {
 		Total     int64
@@ -66,14 +71,16 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 		Failed    int64
 	}
 	var wCounts webhookCounts
-	r.db.Raw(`
+	if err := r.db.Raw(`
 		SELECT
 			COUNT(*)                                   AS total,
 			COUNT(*) FILTER (WHERE delivered = true)   AS delivered,
 			COUNT(*) FILTER (WHERE delivered = false)  AS failed
 		FROM webhook_events
 		WHERE merchant_id = ? AND deleted_at IS NULL
-	`, merchantID).Scan(&wCounts)
+	`, merchantID).Scan(&wCounts).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch webhook counts: %w", err)
+	}
 
 	stats.TotalWebhooks = wCounts.Total
 	stats.DeliveredWebhooks = wCounts.Delivered
@@ -86,7 +93,7 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 	}
 	var dailyRows []dailyRow
 
-	r.db.Raw(`
+	if err := r.db.Raw(`
 		SELECT
 			TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD')          AS date,
 			COUNT(*)                                                        AS count,
@@ -97,7 +104,9 @@ func (r *StatsRepository) GetMerchantStats(merchantID string) (*domain.MerchantS
 		  AND created_at >= NOW() - INTERVAL '7 days'
 		GROUP BY DATE_TRUNC('day', created_at)
 		ORDER BY date ASC
-	`, merchantID).Scan(&dailyRows)
+	`, merchantID).Scan(&dailyRows).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch daily activity: %w", err)
+	}
 
 	dailyMap := make(map[string]domain.DailyActivity)
 	for _, row := range dailyRows {

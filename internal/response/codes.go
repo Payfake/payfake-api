@@ -44,7 +44,9 @@ const (
 	// Amount is zero or negative, we reject this early before hitting the simulator.
 	TransactionInvalidAmount Code = "TRANSACTION_INVALID_AMOUNT"
 	// Currency code provided is not in our supported list (GHS, NGN, KES, USD).
-	TransactionInvalidCurrency Code = "TRANSACTION_INVALID_CURRENCY"
+	TransactionInvalidCurrency    Code = "TRANSACTION_INVALID_CURRENCY"
+	TransactionInvalidChannel     Code = "TRANSACTION_INVALID_CHANNEL"
+	TransactionInvalidCallbackURL Code = "TRANSACTION_INVALID_CALLBACK_URL"
 	// Transaction was initialized but never completed, customer left the flow.
 	TransactionAbandoned Code = "TRANSACTION_ABANDONED"
 	// Transaction exceeded the allowed window to be completed.

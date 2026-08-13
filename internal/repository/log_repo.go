@@ -28,9 +28,11 @@ func (r *LogRepository) List(merchantID string, offset, limit int) ([]domain.Req
 	var logs []domain.RequestLog
 	var total int64
 
-	r.db.Model(&domain.RequestLog{}).
+	if err := r.db.Model(&domain.RequestLog{}).
 		Where("merchant_id = ?", merchantID).
-		Count(&total)
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := r.db.Where("merchant_id = ?", merchantID).
 		Order("logged_at DESC").

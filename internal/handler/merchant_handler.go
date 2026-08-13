@@ -48,8 +48,8 @@ func (h *MerchantHandler) GetProfile(c *gin.Context) {
 }
 
 type updateProfileRequest struct {
-	BusinessName string `json:"business_name"`
-	WebhookURL   string `json:"webhook_url"`
+	BusinessName *string `json:"business_name"`
+	WebhookURL   *string `json:"webhook_url"`
 }
 
 func (h *MerchantHandler) UpdateProfile(c *gin.Context) {
@@ -67,6 +67,11 @@ func (h *MerchantHandler) UpdateProfile(c *gin.Context) {
 
 	merchant, err := h.merchantSvc.UpdateProfile(merchantID, req.BusinessName, req.WebhookURL)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidWebhookURL) {
+			response.UnprocessableErr(c, "Invalid webhook URL", response.MerchantUpdated,
+				field("webhook_url", "url", "Webhook URL is not allowed"))
+			return
+		}
 		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}

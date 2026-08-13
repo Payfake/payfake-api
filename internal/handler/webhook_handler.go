@@ -1,8 +1,7 @@
 package handler
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,7 +10,6 @@ import (
 	"github.com/payfake/payfake-api/internal/middleware"
 	"github.com/payfake/payfake-api/internal/response"
 	"github.com/payfake/payfake-api/internal/service"
-	pfcrypto "github.com/payfake/payfake-api/pkg/crypto"
 	"gorm.io/gorm"
 )
 
@@ -19,10 +17,11 @@ type WebhookHandler struct {
 	db          *gorm.DB
 	merchantSvc *service.MerchantService
 	authSvc     *service.AuthService
+	webhookSvc  *service.WebhookService
 }
 
-func NewWebhookHandler(db *gorm.DB, merchantSvc *service.MerchantService, authSvc *service.AuthService) *WebhookHandler {
-	return &WebhookHandler{db: db, merchantSvc: merchantSvc, authSvc: authSvc}
+func NewWebhookHandler(db *gorm.DB, merchantSvc *service.MerchantService, authSvc *service.AuthService, webhookSvc *service.WebhookService) *WebhookHandler {
+	return &WebhookHandler{db: db, merchantSvc: merchantSvc, authSvc: authSvc, webhookSvc: webhookSvc}
 }
 
 func (h *WebhookHandler) GetWebhookURL(c *gin.Context) {
@@ -62,8 +61,13 @@ func (h *WebhookHandler) UpdateWebhookURL(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.merchantSvc.UpdateProfile(merchantID, "", req.WebhookURL)
+	merchant, err := h.merchantSvc.UpdateProfile(merchantID, nil, &req.WebhookURL)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidWebhookURL) {
+			response.UnprocessableErr(c, "Invalid webhook URL", response.MerchantUpdated,
+				field("webhook_url", "url", "Webhook URL is not allowed"))
+			return
+		}
 		response.InternalErr(c, "An error occurred, please try again later")
 		return
 	}
@@ -114,15 +118,7 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 		},
 	}
 
-	payloadBytes, _ := json.Marshal(payload)
-	signature := pfcrypto.Sign(merchant.SecretKey, payloadBytes)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	httpReq, _ := http.NewRequest("POST", merchant.WebhookURL, bytes.NewBuffer(payloadBytes))
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Paystack-Signature", signature)
-
-	httpResp, err := client.Do(httpReq)
+	statusCode, err := h.webhookSvc.DeliverTest(merchant, payload)
 
 	result := gin.H{
 		"webhook_url": merchant.WebhookURL,
@@ -137,10 +133,8 @@ func (h *WebhookHandler) TestWebhook(c *gin.Context) {
 			response.WebhookDeliveryFailed, result)
 		return
 	}
-	defer httpResp.Body.Close()
-
-	result["success"] = httpResp.StatusCode >= 200 && httpResp.StatusCode < 300
-	result["status_code"] = httpResp.StatusCode
+	result["success"] = statusCode >= 200 && statusCode < 300
+	result["status_code"] = statusCode
 
 	response.Success(c, http.StatusOK, "Test webhook sent",
 		response.WebhookRetried, result)

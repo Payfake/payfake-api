@@ -31,18 +31,23 @@ const (
 
 type Transaction struct {
 	Base
-	MerchantID  string             `gorm:"type:varchar(36);not null;index;index:idx_transactions_merchant_reference,unique" json:"merchant_id"`
-	CustomerID  string             `gorm:"type:varchar(36);index" json:"customer_id"`
-	Reference   string             `gorm:"type:varchar(100);not null;index;index:idx_transactions_merchant_reference,unique" json:"reference"`
-	Amount      int64              `gorm:"not null" json:"amount"`
-	Currency    Currency           `gorm:"type:varchar(10);default:'GHS'" json:"currency"`
-	Status      TransactionStatus  `gorm:"type:varchar(20);default:'pending'" json:"status"`
-	Channel     TransactionChannel `gorm:"type:varchar(20)" json:"channel"`
-	Fees        int64              `gorm:"default:0" json:"fees"`
-	AccessCode  string             `gorm:"type:varchar(100)" json:"access_code"`
-	CallbackURL string             `gorm:"type:varchar(500)" json:"callback_url"`
-	PaidAt      *time.Time         `json:"paid_at"`
-	Metadata    JSON               `gorm:"type:jsonb" json:"metadata"`
+	MerchantID string             `gorm:"type:varchar(36);not null;index;index:idx_transactions_merchant_reference,unique" json:"merchant_id"`
+	CustomerID string             `gorm:"type:varchar(36);index" json:"customer_id"`
+	Reference  string             `gorm:"type:varchar(100);not null;index;index:idx_transactions_merchant_reference,unique" json:"reference"`
+	Amount     int64              `gorm:"not null" json:"amount"`
+	Currency   Currency           `gorm:"type:varchar(10);default:'GHS'" json:"currency"`
+	Status     TransactionStatus  `gorm:"type:varchar(20);default:'pending'" json:"status"`
+	Channel    TransactionChannel `gorm:"type:varchar(20)" json:"channel"`
+	Fees       int64              `gorm:"default:0" json:"fees"`
+	AccessCode string             `gorm:"type:varchar(100);uniqueIndex" json:"access_code"`
+	// AccessCodeExpiresAt bounds how long a hosted checkout link can be used.
+	// The transaction status still prevents mutations after completion, while
+	// this expiry prevents an abandoned checkout token from remaining a valid
+	// public lookup credential forever.
+	AccessCodeExpiresAt time.Time  `gorm:"index" json:"access_code_expires_at"`
+	CallbackURL         string     `gorm:"type:varchar(500)" json:"callback_url"`
+	PaidAt              *time.Time `json:"paid_at"`
+	Metadata            JSON       `gorm:"type:jsonb" json:"metadata"`
 
 	// Associations, always at the bottom, after all column fields.
 	// GORM resolves foreign keys top-down so the FK column must exist

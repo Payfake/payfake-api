@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/payfake/payfake-api/internal/domain"
@@ -17,6 +18,7 @@ type TransactionService struct {
 	transactionRepo *repository.TransactionRepository
 	customerService *CustomerService
 	merchantRepo    *repository.MerchantRepository
+	webhookSvc      *WebhookService
 	frontendURL     string
 }
 
@@ -24,12 +26,14 @@ func NewTransactionService(
 	transactionRepo *repository.TransactionRepository,
 	customerService *CustomerService,
 	merchantRepo *repository.MerchantRepository,
+	webhookSvc *WebhookService,
 	frontendURL string,
 ) *TransactionService {
 	return &TransactionService{
 		transactionRepo: transactionRepo,
 		customerService: customerService,
 		merchantRepo:    merchantRepo,
+		webhookSvc:      webhookSvc,
 		frontendURL:     frontendURL,
 	}
 }
@@ -77,6 +81,22 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	if !validCurrencies[input.Currency] {
 		return nil, ErrInvalidCurrency
 	}
+	validChannels := map[domain.TransactionChannel]bool{
+		domain.ChannelCard:         true,
+		domain.ChannelMobileMoney:  true,
+		domain.ChannelBankTransfer: true,
+	}
+	for _, channel := range input.Channels {
+		if !validChannels[channel] {
+			return nil, ErrInvalidChannel
+		}
+	}
+	if input.CallbackURL != "" {
+		callback, err := url.ParseRequestURI(input.CallbackURL)
+		if err != nil || (callback.Scheme != "http" && callback.Scheme != "https") || callback.Hostname() == "" {
+			return nil, ErrInvalidCallbackURL
+		}
+	}
 
 	// Check reference uniqueness per merchant.
 	// If the same reference is sent twice it means the developer is
@@ -110,6 +130,7 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	}
 
 	accessCode := uid.NewAccessCode()
+	accessCodeExpiresAt := time.Now().Add(time.Hour)
 
 	// The authorization URL is what the frontend opens.
 	// It points to Payfake's payment popup page, the same UX
@@ -117,16 +138,17 @@ func (s *TransactionService) Initialize(input InitializeInput) (*InitializeOutpu
 	authURL := fmt.Sprintf("%s/%s", s.frontendURL, accessCode)
 
 	tx := &domain.Transaction{
-		Base:        domain.Base{ID: uid.NewTransactionID()},
-		MerchantID:  input.MerchantID,
-		CustomerID:  customer.ID,
-		Reference:   reference,
-		Amount:      input.Amount,
-		Currency:    input.Currency,
-		Status:      domain.TransactionPending,
-		AccessCode:  accessCode,
-		CallbackURL: input.CallbackURL,
-		Metadata:    input.Metadata,
+		Base:                domain.Base{ID: uid.NewTransactionID()},
+		MerchantID:          input.MerchantID,
+		CustomerID:          customer.ID,
+		Reference:           reference,
+		Amount:              input.Amount,
+		Currency:            input.Currency,
+		Status:              domain.TransactionPending,
+		AccessCode:          accessCode,
+		AccessCodeExpiresAt: accessCodeExpiresAt,
+		CallbackURL:         input.CallbackURL,
+		Metadata:            input.Metadata,
 	}
 
 	// Set the channel if only one was provided.
@@ -199,11 +221,18 @@ func (s *TransactionService) Refund(id, merchantID string) (*domain.Transaction,
 		return nil, ErrTransactionAlreadyVerified
 	}
 
-	if err := s.transactionRepo.UpdateStatus(id, domain.TransactionReversed, nil); err != nil {
+	reversed, err := s.transactionRepo.ReverseSuccessful(id)
+	if err != nil {
 		return nil, fmt.Errorf("failed to refund transaction: %w", err)
+	}
+	if !reversed {
+		return nil, ErrTransactionAlreadyRefunded
 	}
 
 	tx.Status = domain.TransactionReversed
+	if err := s.webhookSvc.Dispatch(merchantID, tx.ID, domain.EventRefundProcessed, tx); err != nil {
+		log.Printf("[payfake] refund %s committed but webhook enqueue failed: %v", tx.Reference, err)
+	}
 	return tx, nil
 }
 
@@ -245,11 +274,25 @@ func (s *TransactionService) ForceOutcome(reference, merchantID, status, errorCo
 		paidAt = &now
 	}
 
-	if err := s.transactionRepo.UpdateStatus(tx.ID, newStatus, paidAt); err != nil {
+	forced, err := s.transactionRepo.ForceTerminalState(tx.ID, newStatus, errorCode, paidAt)
+	if err != nil {
 		return nil, fmt.Errorf("failed to force transaction status: %w", err)
+	}
+	if !forced {
+		return nil, ErrTransactionNotPending
 	}
 
 	tx.Status = newStatus
+	tx.PaidAt = paidAt
+	if newStatus == domain.TransactionSuccess {
+		if err := s.webhookSvc.Dispatch(merchantID, tx.ID, domain.EventChargeSuccess, tx); err != nil {
+			log.Printf("[payfake] forced transaction %s committed but webhook enqueue failed: %v", reference, err)
+		}
+	} else if newStatus == domain.TransactionFailed {
+		if err := s.webhookSvc.Dispatch(merchantID, tx.ID, domain.EventChargeFailed, tx); err != nil {
+			log.Printf("[payfake] forced transaction %s committed but webhook enqueue failed: %v", reference, err)
+		}
+	}
 	return tx, nil
 }
 

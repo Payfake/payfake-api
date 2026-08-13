@@ -2,10 +2,12 @@ package repository
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/payfake/payfake-api/internal/domain"
 	"github.com/payfake/payfake-api/pkg/uid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type CustomerRepository struct {
@@ -19,6 +21,17 @@ func NewCustomerRepository(db *gorm.DB) *CustomerRepository {
 // Create inserts a new customer under a merchant account.
 func (r *CustomerRepository) Create(customer *domain.Customer) error {
 	return r.db.Create(customer).Error
+}
+
+func (r *CustomerRepository) CreateOnce(customer *domain.Customer) (bool, error) {
+	result := r.db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "merchant_id"}, {Name: "email"}},
+		TargetWhere: clause.Where{Exprs: []clause.Expression{
+			clause.Eq{Column: "deleted_at", Value: nil},
+		}},
+		DoNothing: true,
+	}).Create(customer)
+	return result.RowsAffected == 1, result.Error
 }
 
 // FindByID retrieves a customer by primary ID scoped to a merchant.
@@ -68,9 +81,11 @@ func (r *CustomerRepository) List(merchantID string, offset, limit int) ([]domai
 	// Count total matching records first, needed for pagination metadata.
 	// We run count and fetch as separate queries because GORM's combined
 	// count+find can behave unexpectedly with complex scopes.
-	r.db.Model(&domain.Customer{}).
+	if err := r.db.Model(&domain.Customer{}).
 		Where("merchant_id = ?", merchantID).
-		Count(&total)
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 
 	result := r.db.Where("merchant_id = ?", merchantID).
 		Order("created_at DESC").
@@ -99,6 +114,7 @@ func (r *CustomerRepository) EmailExists(email, merchantID string) (bool, error)
 // Used by inline charge creation, Paystack creates customers automatically
 // when you charge an email that hasn't been seen before.
 func (r *CustomerRepository) FindOrCreate(merchantID, email string) (*domain.Customer, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
 	var customer domain.Customer
 	result := r.db.Where("merchant_id = ? AND email = ?", merchantID, email).First(&customer)
 	if result.Error == nil {
@@ -114,8 +130,12 @@ func (r *CustomerRepository) FindOrCreate(merchantID, email string) (*domain.Cus
 		Email:      email,
 		Code:       uid.NewCustomerCode(),
 	}
-	if err := r.db.Create(&customer).Error; err != nil {
+	created, err := r.CreateOnce(&customer)
+	if err != nil {
 		return nil, err
+	}
+	if !created {
+		return r.FindByEmail(email, merchantID)
 	}
 	return &customer, nil
 }

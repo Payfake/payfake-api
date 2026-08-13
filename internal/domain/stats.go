@@ -9,6 +9,7 @@ type MerchantStats struct {
 	FailedCount       int64
 	PendingCount      int64
 	AbandonedCount    int64
+	ReversedCount     int64
 	TotalVolume       int64
 	SuccessRate       float64
 	TotalCustomers    int64

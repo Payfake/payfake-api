@@ -51,7 +51,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, h.isProd)
+	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, out.Tokens.RefreshExpiry, h.isProd)
 
 	response.Success(c, http.StatusCreated, "Account created",
 		response.AuthRegisterSuccess, gin.H{
@@ -93,7 +93,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, h.isProd)
+	middleware.SetAuthCookies(c, out.Tokens.AccessToken, out.Tokens.RefreshToken, out.Tokens.AccessExpiry, out.Tokens.RefreshExpiry, h.isProd)
 
 	response.Success(c, http.StatusOK, "Login successful",
 		response.AuthLoginSuccess, gin.H{
@@ -128,7 +128,7 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	middleware.SetAuthCookies(c, tokens.AccessToken, tokens.RefreshToken, tokens.AccessExpiry, h.isProd)
+	middleware.SetAuthCookies(c, tokens.AccessToken, tokens.RefreshToken, tokens.AccessExpiry, tokens.RefreshExpiry, h.isProd)
 
 	response.Success(c, http.StatusOK, "Token refreshed",
 		response.AuthRefreshSuccess, gin.H{
@@ -138,7 +138,16 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 }
 
 func (h *AuthHandler) Logout(c *gin.Context) {
+	// Clear browser state even if the database is temporarily unavailable.
+	// Revocation still reports a server error, but the local session does not
+	// remain active merely because persistence failed during logout.
 	middleware.ClearAuthCookies(c, h.isProd)
+	if refreshToken, err := c.Cookie("payfake_refresh"); err == nil && refreshToken != "" {
+		if err := h.authSvc.RevokeRefreshToken(refreshToken); err != nil {
+			response.InternalErr(c, "An error occurred, please try again later")
+			return
+		}
+	}
 	response.Success(c, http.StatusOK, "Logged out successfully", response.AuthLogoutSuccess, nil)
 }
 

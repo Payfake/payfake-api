@@ -28,7 +28,7 @@ func TestSetAuthCookiesSetsSecureCookiesInProduction(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 
-	SetAuthCookies(ctx, "access-token", "refresh-token", time.Now().Add(time.Hour), true)
+	SetAuthCookies(ctx, "access-token", "refresh-token", time.Now().Add(time.Hour), time.Now().Add(7*24*time.Hour), true)
 
 	cookies := recorder.Header().Values("Set-Cookie")
 	if len(cookies) != 2 {

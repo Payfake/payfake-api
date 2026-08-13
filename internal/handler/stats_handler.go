@@ -42,6 +42,7 @@ func (h *StatsHandler) GetStats(c *gin.Context) {
 				"failed":       stats.FailedCount,
 				"pending":      stats.PendingCount,
 				"abandoned":    stats.AbandonedCount,
+				"reversed":     stats.ReversedCount,
 				"success_rate": stats.SuccessRate,
 			},
 			"volume": gin.H{

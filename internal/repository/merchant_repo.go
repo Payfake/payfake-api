@@ -41,7 +41,9 @@ func (r *MerchantRepository) FindByID(id string) (*domain.Merchant, error) {
 // and during registration to check if the email is already taken.
 func (r *MerchantRepository) FindByEmail(email string) (*domain.Merchant, error) {
 	var merchant domain.Merchant
-	result := r.db.Where("email = ?", email).First(&merchant)
+	// Case-insensitive lookup keeps accounts created by older releases
+	// accessible after new authentication inputs began normalizing email case.
+	result := r.db.Where("LOWER(email) = ?", email).First(&merchant)
 	if result.Error != nil {
 		return nil, result.Error
 	}
@@ -104,7 +106,7 @@ func (r *MerchantRepository) UpdateKeys(id, publicKey, secretKey string) error {
 func (r *MerchantRepository) EmailExists(email string) (bool, error) {
 	var count int64
 	result := r.db.Model(&domain.Merchant{}).
-		Where("email = ?", email).
+		Where("LOWER(email) = ?", email).
 		Count(&count)
 	return count > 0, result.Error
 }

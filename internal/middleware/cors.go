@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -28,6 +29,23 @@ func PrivateCORS(frontendURL string) gin.HandlerFunc {
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	})
+}
+
+// ScopedCORS selects the policy by route namespace before Gin route matching.
+// Installing it globally is necessary because browsers send OPTIONS requests
+// to paths that do not have explicit OPTIONS handlers. The path guard keeps the
+// public wildcard confined to checkout while private routes accept only the
+// configured dashboard origin.
+func ScopedCORS(frontendURL string) gin.HandlerFunc {
+	public := PublicCORS()
+	private := PrivateCORS(frontendURL)
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/public/") {
+			public(c)
+			return
+		}
+		private(c)
+	}
 }
 
 // PublicCORS allows browser checkout flows from any origin.

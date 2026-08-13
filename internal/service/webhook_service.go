@@ -14,12 +14,13 @@ import (
 	"github.com/payfake/payfake-api/internal/repository"
 	"github.com/payfake/payfake-api/pkg/crypto"
 	"github.com/payfake/payfake-api/pkg/uid"
+	"github.com/payfake/payfake-api/pkg/webhookurl"
 )
 
 const maxWebhookResponseBodyBytes = 8192
 
 type webhookRepository interface {
-	CreateEvent(*domain.WebhookEvent) error
+	CreateEvent(*domain.WebhookEvent) (bool, error)
 	CreateAttempt(*domain.WebhookAttempt) error
 	RecordAttemptResult(string, bool) error
 	FindEventByID(string, string) (*domain.WebhookEvent, error)
@@ -41,10 +42,12 @@ type WebhookService struct {
 func NewWebhookService(
 	webhookRepo *repository.WebhookRepository,
 	merchantRepo *repository.MerchantRepository,
+	allowPrivateWebhookURLs bool,
 ) *WebhookService {
 	return &WebhookService{
 		webhookRepo:  webhookRepo,
 		merchantRepo: merchantRepo,
+		httpClient:   webhookurl.NewClient(allowPrivateWebhookURLs, 10*time.Second),
 	}
 }
 
@@ -58,6 +61,17 @@ func (s *WebhookService) Dispatch(
 	eventType domain.WebhookEventType,
 	transaction *domain.Transaction,
 ) error {
+	merchant, err := s.merchantRepo.FindByID(merchantID)
+	if err != nil {
+		return fmt.Errorf("failed to find webhook merchant: %w", err)
+	}
+	if merchant.WebhookURL == "" {
+		// No delivery intent exists when the merchant has not configured an
+		// endpoint. Creating an undelivered event here would make the retry
+		// worker retry it forever because no HTTP attempt can be recorded.
+		return nil
+	}
+
 	// Build the webhook payload, same shape as Paystack's webhook body.
 	// Developers verify our webhooks the same way they verify Paystack's.
 	payload := map[string]any{
@@ -75,13 +89,18 @@ func (s *WebhookService) Dispatch(
 		MerchantID:    merchantID,
 		TransactionID: transactionID,
 		Event:         eventType,
+		DeliveryKey:   transactionID + ":" + string(eventType),
 		Payload:       domain.JSON(payload),
 		Delivered:     false,
 		Attempts:      0,
 	}
 
-	if err := s.webhookRepo.CreateEvent(event); err != nil {
+	created, err := s.webhookRepo.CreateEvent(event)
+	if err != nil {
 		return fmt.Errorf("failed to create webhook event: %w", err)
+	}
+	if !created {
+		return nil
 	}
 
 	// Attempt delivery immediately in a goroutine so the charge
@@ -160,6 +179,34 @@ func (s *WebhookService) deliver(event *domain.WebhookEvent, payloadBytes []byte
 	if err := s.webhookRepo.RecordAttemptResult(event.ID, attempt.Succeeded); err != nil {
 		log.Printf("[payfake] webhook delivery: failed to update event %s: %v", event.ID, err)
 	}
+}
+
+// DeliverTest sends an ad-hoc dashboard test through the same restricted HTTP
+// client as real events. Keeping both paths together prevents the test endpoint
+// from becoming an SSRF bypass around production webhook validation.
+func (s *WebhookService) DeliverTest(merchant *domain.Merchant, payload any) (int, error) {
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal test webhook: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, merchant.WebhookURL, bytes.NewReader(payloadBytes))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create test webhook request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(crypto.SignatureHeader, crypto.Sign(merchant.SecretKey, payloadBytes))
+
+	client := s.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxWebhookResponseBodyBytes))
+	return resp.StatusCode, nil
 }
 
 // Retry manually re-triggers delivery for a specific webhook event.

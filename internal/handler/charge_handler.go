@@ -179,6 +179,21 @@ func (h *ChargeHandler) handleChargeError(c *gin.Context, err error) {
 			"OTP has expired",
 			response.ChargeInvalidOTP,
 			field("otp", "expired", "OTP has expired, please request a new one"))
+	case errors.Is(err, service.ErrInvalidPIN):
+		response.UnprocessableErr(c, "Invalid PIN", response.ChargeFlowInvalidStep,
+			field("pin", "format", "PIN must contain exactly 4 digits"))
+	case errors.Is(err, service.ErrInvalidCard):
+		response.UnprocessableErr(c, "Invalid card details", response.ChargeFailed,
+			field("card", "invalid", "Card number, CVV, or expiry is invalid"))
+	case errors.Is(err, service.ErrInvalidBirthday):
+		response.UnprocessableErr(c, "Invalid birthday", response.ChargeFlowInvalidStep,
+			field("birthday", "date", "Birthday must be a non-future date in YYYY-MM-DD format"))
+	case errors.Is(err, service.ErrInvalidMomoProvider):
+		response.UnprocessableErr(c, "Invalid mobile money details", response.ChargeFailed,
+			field("mobile_money.provider", "oneof", "Provider must be mtn, vodafone, or airteltigo"))
+	case errors.Is(err, service.ErrInvalidBankDetails):
+		response.UnprocessableErr(c, "Invalid bank details", response.ChargeFailed,
+			field("bank", "required", "Bank code and account number are required"))
 	default:
 		response.InternalErr(c, "An error occurred, please try again later")
 	}
@@ -478,6 +493,7 @@ func (h *ChargeHandler) PublicCharge(c *gin.Context) {
 		response.NotFoundErr(c, "Invalid or expired access code")
 		return
 	}
+	c.Set("merchant_id", merchant.ID)
 
 	switch {
 	case req.Card != nil:
@@ -537,8 +553,12 @@ type publicReferenceRequest struct {
 	Reference  string `json:"reference" binding:"required"`
 }
 
-func (h *ChargeHandler) resolvePublicMerchant(accessCode, reference string) (*domain.Merchant, error) {
-	return h.chargeSvc.GetMerchantByAccessCodeAndReference(accessCode, reference)
+func (h *ChargeHandler) resolvePublicMerchant(c *gin.Context, accessCode, reference string) (*domain.Merchant, error) {
+	merchant, err := h.chargeSvc.GetMerchantByAccessCodeAndReference(accessCode, reference)
+	if err == nil {
+		c.Set("merchant_id", merchant.ID)
+	}
+	return merchant, err
 }
 
 type publicSubmitPINRequest struct {
@@ -582,7 +602,7 @@ func (h *ChargeHandler) PublicSubmitPIN(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -611,7 +631,7 @@ func (h *ChargeHandler) PublicSubmitOTP(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -639,7 +659,7 @@ func (h *ChargeHandler) PublicSubmitBirthday(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -668,7 +688,7 @@ func (h *ChargeHandler) PublicSubmitAddress(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -700,7 +720,7 @@ func (h *ChargeHandler) PublicResendOTP(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, req.Reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, req.Reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return
@@ -739,7 +759,7 @@ func (h *ChargeHandler) Simulate3DS(c *gin.Context) {
 		return
 	}
 
-	merchant, err := h.resolvePublicMerchant(req.AccessCode, reference)
+	merchant, err := h.resolvePublicMerchant(c, req.AccessCode, reference)
 	if err != nil {
 		response.NotFoundErr(c, "Transaction not found")
 		return

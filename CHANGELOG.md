@@ -6,14 +6,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ---
 ## [Unreleased]
 
+### Fixed
+- OTP submission now compares the supplied code with the latest generated OTP
+- Charge transitions, OTP consumption, refunds, and forced outcomes use conditional database updates
+- Refresh-token rotation is backed by one-time server sessions with logout and password-change revocation
+- Production webhook delivery blocks private-network SSRF destinations and DNS rebinding
+- Dashboard request logs are persisted with sensitive fields redacted
+- Public wildcard CORS is scoped to checkout routes instead of leaking onto private routes
+- Checkout access codes expire after one hour and are unique per transaction
+- Scenario failure rates are sampled once per charge rather than once per form step
+- Merchant profile updates preserve omitted webhook URLs
+- Docker, environment examples, checkout URLs, and supported Go version are aligned with runtime behavior
+
 ### Planned
-- Unit and integration test suite
 - Flutterwave-compatible API surface
 - Nigeria USSD and QR channels
 - Kenya M-Pesa channel
-- Webhook retry background worker
 - Admin panel for multi-merchant management
-- Rate limiting per merchant key
+- PostgreSQL integration tests for complete charge lifecycles
 
 
 ---

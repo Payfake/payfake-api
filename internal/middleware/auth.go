@@ -85,7 +85,9 @@ func RequireSecretKey(db *gorm.DB) gin.HandlerFunc {
 // 2. The Authorization header (SDK/API calls Bearer token)
 // Cookie takes priority since it's the more secure option for browsers.
 // The Authorization header fallback keeps the existing SDK behaviour working.
-func RequireJWT() gin.HandlerFunc {
+func RequireJWT(authSvc interface {
+	ValidateJWT(string) (string, string, error)
+}) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var token string
 
@@ -111,7 +113,15 @@ func RequireJWT() gin.HandlerFunc {
 			token = parts[1]
 		}
 
+		merchantID, _, err := authSvc.ValidateJWT(token)
+		if err != nil {
+			response.UnauthorizedErr(c, "Invalid or expired session")
+			c.Abort()
+			return
+		}
+
 		c.Set("jwt_token", token)
+		c.Set("merchant_id_from_jwt", merchantID)
 		c.Next()
 	}
 }
@@ -137,9 +147,9 @@ func HydrateMerchantIDFromJWT(authSvc interface {
 // HttpOnly = JavaScript cannot read these cookies, only the browser sends them.
 // SameSite=Lax keeps cookies off most cross-site subrequests while still
 // working for same-site frontend/API deployments.
-func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry time.Time, isProd bool) {
+func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpiry, refreshExpiry time.Time, isProd bool) {
 	accessMaxAge := int(time.Until(accessExpiry).Seconds())
-	refreshMaxAge := 7 * 24 * 60 * 60 // 7 days in seconds
+	refreshMaxAge := int(time.Until(refreshExpiry).Seconds())
 
 	c.SetSameSite(http.SameSiteLaxMode)
 
@@ -154,15 +164,14 @@ func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 		true,   // HttpOnly, not accessible via JavaScript
 	)
 
-	// Refresh token cookie, long lived, only sent to the refresh endpoint.
-	// Path="/api/v1/auth/refresh" means the browser only sends this cookie
-	// to that specific endpoint, not to every API call. This limits the
-	// window where a stolen refresh token could be used.
+	// The refresh cookie is scoped to the auth namespace so it reaches both
+	// refresh and logout. Sending it to logout lets the server revoke the
+	// one-time session instead of merely deleting the browser's local cookie.
 	c.SetCookie(
 		"payfake_refresh",
 		refreshToken,
 		refreshMaxAge,
-		"/api/v1/auth/refresh",
+		"/api/v1/auth",
 		"",
 		isProd,
 		true,
@@ -174,7 +183,7 @@ func SetAuthCookies(c *gin.Context, accessToken, refreshToken string, accessExpi
 func ClearAuthCookies(c *gin.Context, isProd bool) {
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie("payfake_access", "", -1, "/", "", isProd, true)
-	c.SetCookie("payfake_refresh", "", -1, "/api/v1/auth/refresh", "", isProd, true)
+	c.SetCookie("payfake_refresh", "", -1, "/api/v1/auth", "", isProd, true)
 }
 
 // GetMerchant is a convenience helper that handlers call to retrieve
@@ -197,6 +206,13 @@ func GetMerchant(c *gin.Context) (domain.Merchant, bool) {
 func GetMerchantIDFromJWT(c *gin.Context, authSvc interface {
 	ValidateJWT(string) (string, string, error)
 }) (string, bool) {
+	// RequireJWT stores the validated identity so handlers and later
+	// middleware do not repeatedly parse and verify the same signature.
+	if merchantID, exists := c.Get("merchant_id_from_jwt"); exists {
+		id, ok := merchantID.(string)
+		return id, ok && id != ""
+	}
+
 	tokenVal, exists := c.Get("jwt_token")
 	if !exists {
 		return "", false

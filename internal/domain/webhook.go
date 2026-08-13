@@ -24,10 +24,13 @@ type WebhookEvent struct {
 	MerchantID    string           `gorm:"type:varchar(36);not null;index" json:"merchant_id"`
 	TransactionID string           `gorm:"type:varchar(36);not null;index" json:"transaction_id"`
 	Event         WebhookEventType `gorm:"type:varchar(50)" json:"event"`
-	Payload       JSON             `gorm:"type:jsonb" json:"payload"`
-	Delivered     bool             `gorm:"default:false" json:"delivered"`
-	Attempts      int              `gorm:"default:0" json:"attempts"`
-	LastAttemptAt *time.Time       `json:"last_attempt_at"`
+	// DeliveryKey makes newly created events idempotent without imposing a new
+	// composite unique index on legacy rows that may already contain duplicates.
+	DeliveryKey   string     `gorm:"type:varchar(100);uniqueIndex" json:"-"`
+	Payload       JSON       `gorm:"type:jsonb" json:"payload"`
+	Delivered     bool       `gorm:"default:false" json:"delivered"`
+	Attempts      int        `gorm:"default:0" json:"attempts"`
+	LastAttemptAt *time.Time `json:"last_attempt_at"`
 
 	AttemptLogs []WebhookAttempt `gorm:"foreignKey:WebhookEventID" json:"-"`
 }

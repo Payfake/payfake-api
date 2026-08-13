@@ -20,15 +20,20 @@ type RouterResult struct {
 
 func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, appEnv string) RouterResult {
 	r := gin.New()
+	// Gin trusts forwarded IP headers by default. Payfake does not know which
+	// reverse proxy a deployment uses, so trusting every sender would let a
+	// client spoof X-Forwarded-For and bypass the IP rate limiter. Deployments
+	// that need proxy-aware client IPs should configure an explicit allowlist.
+	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestID())
 	r.Use(func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
 		c.Next()
 	})
-	r.Use(middleware.Logger())
+	r.Use(middleware.Logger(db))
 	r.Use(middleware.RateLimit(200, time.Minute))
-	r.Use(middleware.PublicCORS())
+	r.Use(middleware.ScopedCORS(frontendURL))
 
 	isProd := appEnv == "production"
 
@@ -42,14 +47,15 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	logRepo := repository.NewLogRepository(db)
 	statsRepo := repository.NewStatsRepository(db)
 	otpRepo := repository.NewOTPRepository(db)
+	refreshSessionRepo := repository.NewRefreshSessionRepository(db)
 
 	// Services
-	authSvc := service.NewAuthService(merchantRepo, jwtSecret, accessExpiry, refreshExpiry)
-	merchantSvc := service.NewMerchantService(merchantRepo)
+	authSvc := service.NewAuthService(merchantRepo, refreshSessionRepo, jwtSecret, accessExpiry, refreshExpiry)
+	merchantSvc := service.NewMerchantService(merchantRepo, !isProd)
 	customerSvc := service.NewCustomerService(customerRepo)
 	simulatorSvc := service.NewSimulatorService(scenarioRepo)
-	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo)
-	txSvc := service.NewTransactionService(transactionRepo, customerSvc, merchantRepo, frontendURL)
+	webhookSvc := service.NewWebhookService(webhookRepo, merchantRepo, !isProd)
+	txSvc := service.NewTransactionService(transactionRepo, customerSvc, merchantRepo, webhookSvc, frontendURL)
 	chargeSvc := service.NewChargeService(chargeRepo, transactionRepo, merchantRepo, customerRepo, otpRepo, simulatorSvc, webhookSvc, frontendURL)
 	scenarioSvc := service.NewScenarioService(scenarioRepo)
 	logSvc := service.NewLogService(logRepo)
@@ -58,7 +64,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 	// Handlers
 	authHandler := handler.NewAuthHandler(db, authSvc, isProd)
 	merchantHandler := handler.NewMerchantHandler(db, merchantSvc, authSvc)
-	webhookHandler := handler.NewWebhookHandler(db, merchantSvc, authSvc)
+	webhookHandler := handler.NewWebhookHandler(db, merchantSvc, authSvc, webhookSvc)
 	transactionHandler := handler.NewTransactionHandler(db, txSvc, chargeSvc)
 	chargeHandler := handler.NewChargeHandler(db, chargeSvc)
 	customerHandler := handler.NewCustomerHandler(db, customerSvc, txSvc)
@@ -76,7 +82,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Transaction — matches https://api.paystack.co/transaction/*
 	transaction := r.Group("/transaction")
-	transaction.Use(middleware.PrivateCORS(frontendURL))
 	transaction.Use(middleware.RequireSecretKey(db))
 	{
 		transaction.POST("/initialize", transactionHandler.Initialize)
@@ -88,7 +93,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Charge — single unified endpoint matching https://api.paystack.co/charge
 	charge := r.Group("/charge")
-	charge.Use(middleware.PrivateCORS(frontendURL))
 	charge.Use(middleware.RequireSecretKey(db))
 	{
 		charge.POST("", chargeHandler.Charge)
@@ -102,7 +106,6 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Customer — matches https://api.paystack.co/customer/*
 	customer := r.Group("/customer")
-	customer.Use(middleware.PrivateCORS(frontendURL))
 	customer.Use(middleware.RequireSecretKey(db))
 	{
 		customer.POST("", customerHandler.Create)
@@ -121,16 +124,15 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Auth (Payfake dashboard auth, no Paystack equivalent)
 	auth := v1.Group("/auth")
-	auth.Use(middleware.PrivateCORS(frontendURL))
 	{
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
 		auth.POST("/refresh", authHandler.Refresh)
+		auth.POST("/logout", authHandler.Logout)
 
 		protected := auth.Group("")
-		protected.Use(middleware.RequireJWT())
+		protected.Use(middleware.RequireJWT(authSvc))
 		{
-			protected.POST("/logout", authHandler.Logout)
 			protected.GET("/me", authHandler.Me)
 			protected.GET("/keys", authHandler.GetKeys)
 			protected.POST("/keys/regenerate", authHandler.RegenerateKeys)
@@ -139,8 +141,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Merchant profile (Payfake dashboard, no Paystack equivalent)
 	merchant := v1.Group("/merchant")
-	merchant.Use(middleware.PrivateCORS(frontendURL))
-	merchant.Use(middleware.RequireJWT())
+	merchant.Use(middleware.RequireJWT(authSvc))
 	{
 		merchant.GET("", merchantHandler.GetProfile)
 		merchant.PUT("", merchantHandler.UpdateProfile)
@@ -156,8 +157,7 @@ func Setup(db *gorm.DB, jwtSecret, accessExpiry, refreshExpiry, frontendURL, app
 
 	// Control panel (Payfake-specific, no Paystack equivalent)
 	control := v1.Group("/control")
-	control.Use(middleware.PrivateCORS(frontendURL))
-	control.Use(middleware.RequireJWT())
+	control.Use(middleware.RequireJWT(authSvc))
 	{
 		control.GET("/stats", statsHandler.GetStats)
 		control.GET("/transactions", controlHandler.ListTransactions)
